@@ -8,6 +8,7 @@ import (
 )
 
 func Ask(args []string) {
+	// Extract --escalate before parsing standard flags
 	escalate := false
 	var filtered []string
 	for _, a := range args {
@@ -18,18 +19,32 @@ func Ask(args []string) {
 		}
 	}
 
-	message := joinArgs(filtered)
-	if message == "" {
-		fmt.Fprintln(os.Stderr, "dispatch: usage: dispatch ask \"question\"")
+	f := ParseAgentFlags(filtered)
+	if f.Message == "" {
+		fmt.Fprintln(os.Stderr, `dispatch ask — ask a question (blocks until answered)
+
+Usage:
+  dispatch ask --job <id> "question"
+  dispatch ask --job <id> --escalate "need human help"
+
+Flags:
+  --job, -j       Job ID (or DISPATCH_JOB_ID env)
+  --task, -t      Task ID (or DISPATCH_TASK_ID env)
+  --escalate, -e  Escalate to human`)
 		os.Exit(1)
 	}
 
-	pipePath := getPipePath()
+	if f.JobID == "" {
+		fmt.Fprintln(os.Stderr, "dispatch: --job is required (or set DISPATCH_JOB_ID)")
+		os.Exit(1)
+	}
+
+	pipePath := getPipePathWithOverride(f.Pipe)
 	err := pipe.Send(pipePath, pipe.Message{
 		Type:     "ask",
-		JobID:    os.Getenv("DISPATCH_JOB_ID"),
-		TaskID:   os.Getenv("DISPATCH_TASK_ID"),
-		Question: message,
+		JobID:    f.JobID,
+		TaskID:   f.TaskID,
+		Question: f.Message,
 		Escalate: escalate,
 	})
 	if err != nil {
