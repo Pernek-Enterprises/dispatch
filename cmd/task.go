@@ -186,9 +186,15 @@ func createTask(description, workflowName, priority string) string {
 	// Generate task ID
 	taskID := jobs.NewTaskID()
 
-	// Build the prompt for the first step
-	prompt := fmt.Sprintf("# Task: %s\n\n%s\n\n## Step: %s\n\n%s",
+	// Build the prompt: system prompt + agent prompt + step prompt
+	systemPrompt := loadSystemPrompt(firstStep.Agent)
+	stepPrompt := fmt.Sprintf("# Task: %s\n\n%s\n\n## Step: %s\n\n%s",
 		taskID, description, wf.FirstStep, firstStep.Prompt)
+
+	prompt := stepPrompt
+	if systemPrompt != "" {
+		prompt = systemPrompt + "\n\n---\n\n" + stepPrompt
+	}
 
 	artifactDir := filepath.Join(config.Root, "artifacts")
 

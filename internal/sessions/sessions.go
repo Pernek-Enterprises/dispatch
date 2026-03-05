@@ -82,10 +82,33 @@ func Dispatch(cfg *config.OpenClawConfig, taskID, agentName, model, prompt strin
 		fmt.Sprintf("DISPATCH_ROOT=%s", config.Root),
 	)
 
-	output, err := cmd.CombinedOutput()
+	// Fire and forget — don't block the foreman waiting for the agent to finish.
+	// The agent will call `dispatch done/fail` via the pipe when it's done.
+	// We capture output to a log file for debugging.
+	logDir := filepath.Join(config.Root, "logs")
+	os.MkdirAll(logDir, 0755)
+	logFile, err := os.Create(filepath.Join(logDir, sessionID+".log"))
 	if err != nil {
-		return fmt.Errorf("openclaw agent failed: %w — %s", err, string(output))
+		return fmt.Errorf("failed to create session log: %w", err)
 	}
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		return fmt.Errorf("openclaw agent failed to start: %w", err)
+	}
+
+	// Reap the process in the background
+	go func() {
+		err := cmd.Wait()
+		logFile.Close()
+		if err != nil {
+			log.Error("Session %s exited with error: %v", sessionID, err)
+		} else {
+			log.Info("Session %s exited cleanly", sessionID)
+		}
+	}()
 
 	// Save/update session info
 	info := &SessionInfo{
