@@ -42,13 +42,13 @@ func Get(taskID, agentName string) *SessionInfo {
 
 // Spawn creates a new OpenClaw session.
 func Spawn(cfg *config.OpenClawConfig, taskID, agentName, modelID, prompt string) (*SessionInfo, error) {
-	// Resolve dispatch agent name → OpenClaw agent ID
-	agentID := agentName
-	if cfg.AgentIDs != nil {
-		if mapped, ok := cfg.AgentIDs[agentName]; ok {
-			agentID = mapped
-		}
+	// Resolve dispatch agent name → OpenClaw agent ID + workspace
+	agentCfg := cfg.Agents[agentName]
+	agentID := agentCfg.ID
+	if agentID == "" {
+		agentID = agentName // fallback to dispatch name
 	}
+	workspaceDir := agentCfg.WorkspaceDir
 
 	// Resolve model ID → provider string
 	modelProvider := ""
@@ -67,7 +67,7 @@ func Spawn(cfg *config.OpenClawConfig, taskID, agentName, modelID, prompt string
 	case "api":
 		return spawnViaAPI(cfg, agentID, modelProvider, taskID, agentName, label, prompt)
 	default:
-		return spawnViaCLI(cfg, agentID, modelProvider, taskID, agentName, label, prompt)
+		return spawnViaCLI(cfg, agentID, modelProvider, taskID, agentName, workspaceDir, label, prompt)
 	}
 }
 
@@ -88,7 +88,7 @@ func Destroy(taskID, agentName string) {
 
 // --- CLI-based ---
 
-func spawnViaCLI(cfg *config.OpenClawConfig, agentID, modelProvider, taskID, agentName, label, prompt string) (*SessionInfo, error) {
+func spawnViaCLI(cfg *config.OpenClawConfig, agentID, modelProvider, taskID, agentName, workspaceDir, label, prompt string) (*SessionInfo, error) {
 	binary := cfg.Binary
 
 	args := []string{
@@ -105,8 +105,8 @@ func spawnViaCLI(cfg *config.OpenClawConfig, agentID, modelProvider, taskID, age
 	log.Info("Spawning: %s %s", binary, strings.Join(args, " "))
 
 	cmd := exec.Command(binary, args...)
-	if cfg.WorkspaceDir != "" {
-		cmd.Dir = cfg.WorkspaceDir
+	if workspaceDir != "" {
+		cmd.Dir = workspaceDir
 	}
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("DISPATCH_JOB_ID=%s", label),
@@ -138,9 +138,6 @@ func sendViaCLI(cfg *config.OpenClawConfig, sessionKey, message string) error {
 	binary := cfg.Binary
 
 	cmd := exec.Command(binary, "session", "send", "--key", sessionKey, "--message", message)
-	if cfg.WorkspaceDir != "" {
-		cmd.Dir = cfg.WorkspaceDir
-	}
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
