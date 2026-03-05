@@ -558,25 +558,11 @@ func loadSystemPrompt(agentName string) string {
 }
 
 func dispatchToSession(cfg *config.Config, job jobs.Job) {
-	existing := sessions.Get(job.Task, job.Agent)
-
-	if existing != nil {
-		log.Info("Reusing session %s for %s/%s", existing.SessionKey, job.Task, job.Agent)
-		err := sessions.Send(&cfg.OpenClaw, existing, job.Prompt)
-		if err != nil {
-			log.Error("Failed to send to session %s: %v — spawning new", existing.SessionKey, err)
-			sessions.Destroy(job.Task, job.Agent)
-			existing = nil
-		}
-	}
-
-	if existing == nil {
-		session, err := sessions.Spawn(&cfg.OpenClaw, job.Task, job.Agent, job.Model, job.Prompt)
-		if err != nil {
-			log.Error("Failed to spawn session for %s/%s: %v", job.Task, job.Agent, err)
-			return
-		}
-		log.Info("Spawned session %s for %s/%s (model=%s)", session.SessionKey, job.Task, job.Agent, job.Model)
+	// Session = task + agent + model (spawned lazily on first use)
+	err := sessions.Dispatch(&cfg.OpenClaw, job.Task, job.Agent, job.Model, job.Prompt)
+	if err != nil {
+		log.Error("Failed to dispatch to %s/%s/%s: %v", job.Task, job.Agent, job.Model, err)
+		// Don't fail the job — stays active, will retry on next poll
 	}
 }
 

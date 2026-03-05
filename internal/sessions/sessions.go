@@ -1,11 +1,8 @@
 package sessions
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,19 +13,101 @@ import (
 	"github.com/Pernek-Enterprises/dispatch/internal/log"
 )
 
-// SessionInfo tracks an active OpenClaw session.
+// SessionInfo tracks an active session (task + agent + model combo).
 type SessionInfo struct {
-	SessionKey string `json:"sessionKey"`
-	AgentID    string `json:"agentId"`
-	Model      string `json:"model"`
-	TaskID     string `json:"taskId"`
-	AgentName  string `json:"agentName"`
-	CreatedAt  string `json:"createdAt"`
+	SessionID string `json:"sessionId"`
+	AgentID   string `json:"agentId"`
+	AgentName string `json:"agentName"`
+	Model     string `json:"model"`
+	TaskID    string `json:"taskId"`
+	CreatedAt string `json:"createdAt"`
+	LastUsed  string `json:"lastUsed"`
 }
 
-// Get returns an existing session for a task+agent combo, or nil.
-func Get(taskID, agentName string) *SessionInfo {
-	p := sessionPath(taskID, agentName)
+// MakeSessionID builds the canonical session ID for a task+agent+model combo.
+func MakeSessionID(taskID, agentName, model string) string {
+	return fmt.Sprintf("dispatch-%s-%s-%s", taskID, agentName, model)
+}
+
+// Dispatch sends a prompt to an agent. Spawns a new session on first use
+// for this task+agent+model combo, reuses on subsequent calls.
+func Dispatch(cfg *config.OpenClawConfig, taskID, agentName, model, prompt string) error {
+	sessionID := MakeSessionID(taskID, agentName, model)
+
+	// Resolve dispatch agent name → OpenClaw agent ID
+	agentID := agentName
+	if agentCfg, ok := cfg.Agents[agentName]; ok && agentCfg.ID != "" {
+		agentID = agentCfg.ID
+	}
+
+	// Resolve model ID → provider string
+	modelProvider := model
+	if model != "" {
+		models, err := config.LoadModels()
+		if err == nil {
+			if m, ok := models[model]; ok && m.Provider != "" {
+				modelProvider = m.Provider
+			}
+		}
+	}
+
+	// Check if session already exists (for logging)
+	existing := Get(taskID, agentName, model)
+	if existing != nil {
+		log.Info("Reusing session %s", sessionID)
+	} else {
+		log.Info("New session %s (agent=%s, model=%s)", sessionID, agentID, modelProvider)
+	}
+
+	// Call openclaw agent
+	binary := cfg.Binary
+	if binary == "" {
+		binary = "openclaw"
+	}
+
+	args := []string{
+		"agent",
+		"--agent", agentID,
+		"--session-id", sessionID,
+		"--message", prompt,
+		"--json",
+	}
+
+	log.Info("Exec: %s %s", binary, strings.Join(args[:4], " ")) // don't log full prompt
+
+	cmd := exec.Command(binary, args...)
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("DISPATCH_JOB_ID=%s", sessionID),
+		fmt.Sprintf("DISPATCH_TASK_ID=%s", taskID),
+		fmt.Sprintf("DISPATCH_ROOT=%s", config.Root),
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("openclaw agent failed: %w — %s", err, string(output))
+	}
+
+	// Save/update session info
+	info := &SessionInfo{
+		SessionID: sessionID,
+		AgentID:   agentID,
+		AgentName: agentName,
+		Model:     model,
+		TaskID:    taskID,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		LastUsed:  time.Now().UTC().Format(time.RFC3339),
+	}
+	if existing != nil {
+		info.CreatedAt = existing.CreatedAt
+	}
+	save(info)
+
+	return nil
+}
+
+// Get returns session info for a task+agent+model combo, or nil.
+func Get(taskID, agentName, model string) *SessionInfo {
+	p := sessionPath(taskID, agentName, model)
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil
@@ -40,232 +119,21 @@ func Get(taskID, agentName string) *SessionInfo {
 	return &info
 }
 
-// Spawn creates a new OpenClaw session.
-func Spawn(cfg *config.OpenClawConfig, taskID, agentName, modelID, prompt string) (*SessionInfo, error) {
-	// Resolve dispatch agent name → OpenClaw agent ID + workspace
-	agentCfg := cfg.Agents[agentName]
-	agentID := agentCfg.ID
-	if agentID == "" {
-		agentID = agentName // fallback to dispatch name
-	}
-	workspaceDir := agentCfg.WorkspaceDir
-
-	// Resolve model ID → provider string
-	modelProvider := ""
-	if modelID != "" {
-		models, err := config.LoadModels()
-		if err == nil {
-			if m, ok := models[modelID]; ok && m.Provider != "" {
-				modelProvider = m.Provider
-			}
-		}
-	}
-
-	label := fmt.Sprintf("dispatch-%s-%s", taskID[:min(8, len(taskID))], agentName)
-
-	switch cfg.SpawnMethod {
-	case "api":
-		return spawnViaAPI(cfg, agentID, modelProvider, taskID, agentName, label, prompt)
-	default:
-		return spawnViaCLI(cfg, agentID, modelProvider, taskID, agentName, workspaceDir, label, prompt)
-	}
+// Destroy removes a specific session.
+func Destroy(taskID, agentName, model string) {
+	os.Remove(sessionPath(taskID, agentName, model))
 }
 
-// Send sends a message to an existing session.
-func Send(cfg *config.OpenClawConfig, info *SessionInfo, message string) error {
-	switch cfg.SpawnMethod {
-	case "api":
-		return sendViaAPI(cfg, info.SessionKey, message)
-	default:
-		return sendViaCLI(cfg, info.SessionKey, message)
-	}
-}
-
-// Destroy removes session tracking for a task+agent.
-func Destroy(taskID, agentName string) {
-	os.Remove(sessionPath(taskID, agentName))
-}
-
-// --- CLI-based ---
-
-func spawnViaCLI(cfg *config.OpenClawConfig, agentID, modelProvider, taskID, agentName, workspaceDir, label, prompt string) (*SessionInfo, error) {
-	binary := cfg.Binary
-
-	args := []string{
-		"session", "spawn",
-		"--agent", agentID,
-		"--task", prompt,
-		"--mode", "run",
-		"--label", label,
-	}
-	if modelProvider != "" {
-		args = append(args, "--model", modelProvider)
-	}
-
-	log.Info("Spawning: %s %s", binary, strings.Join(args, " "))
-
-	cmd := exec.Command(binary, args...)
-	if workspaceDir != "" {
-		cmd.Dir = workspaceDir
-	}
-	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("DISPATCH_JOB_ID=%s", label),
-		fmt.Sprintf("DISPATCH_TASK_ID=%s", taskID),
-		fmt.Sprintf("DISPATCH_ROOT=%s", config.Root),
-	)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("spawn failed: %w — %s", err, string(output))
-	}
-
-	sessionKey := strings.TrimSpace(string(output))
-
-	info := &SessionInfo{
-		SessionKey: sessionKey,
-		AgentID:    agentID,
-		Model:      modelProvider,
-		TaskID:     taskID,
-		AgentName:  agentName,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
-	}
-
-	save(info)
-	return info, nil
-}
-
-func sendViaCLI(cfg *config.OpenClawConfig, sessionKey, message string) error {
-	binary := cfg.Binary
-
-	cmd := exec.Command(binary, "session", "send", "--key", sessionKey, "--message", message)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("send failed: %w — %s", err, string(output))
-	}
-	return nil
-}
-
-// --- API-based ---
-
-type spawnRequest struct {
-	Task    string `json:"task"`
-	AgentID string `json:"agentId,omitempty"`
-	Model   string `json:"model,omitempty"`
-	Mode    string `json:"mode"`
-	Label   string `json:"label,omitempty"`
-}
-
-type spawnResponse struct {
-	SessionKey string `json:"sessionKey"`
-}
-
-func spawnViaAPI(cfg *config.OpenClawConfig, agentID, modelProvider, taskID, agentName, label, prompt string) (*SessionInfo, error) {
-	if cfg.GatewayURL == "" {
-		return nil, fmt.Errorf("openclaw.gatewayUrl not configured")
-	}
-
-	reqBody := spawnRequest{
-		Task:    prompt,
-		AgentID: agentID,
-		Model:   modelProvider,
-		Mode:    "run",
-		Label:   label,
-	}
-
-	data, _ := json.Marshal(reqBody)
-	url := strings.TrimRight(cfg.GatewayURL, "/") + "/api/sessions/spawn"
-
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(data))
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.GatewayToken != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.GatewayToken)
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API spawn: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 && resp.StatusCode != 201 {
-		return nil, fmt.Errorf("API spawn HTTP %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result spawnResponse
-	json.Unmarshal(body, &result)
-
-	info := &SessionInfo{
-		SessionKey: result.SessionKey,
-		AgentID:    agentID,
-		Model:      modelProvider,
-		TaskID:     taskID,
-		AgentName:  agentName,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
-	}
-
-	save(info)
-	return info, nil
-}
-
-type sendAPIRequest struct {
-	SessionKey string `json:"sessionKey"`
-	Message    string `json:"message"`
-}
-
-func sendViaAPI(cfg *config.OpenClawConfig, sessionKey, message string) error {
-	if cfg.GatewayURL == "" {
-		return fmt.Errorf("openclaw.gatewayUrl not configured")
-	}
-
-	reqBody := sendAPIRequest{SessionKey: sessionKey, Message: message}
-	data, _ := json.Marshal(reqBody)
-	url := strings.TrimRight(cfg.GatewayURL, "/") + "/api/sessions/send"
-
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(data))
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.GatewayToken != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.GatewayToken)
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("API send: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API send HTTP %d: %s", resp.StatusCode, string(body))
-	}
-	return nil
-}
-
-// --- Persistence ---
-
-func sessionPath(taskID, agentName string) string {
-	return filepath.Join(config.Root, "sessions", fmt.Sprintf("%s-%s.json", taskID, agentName))
-}
-
-func save(info *SessionInfo) {
-	dir := filepath.Join(config.Root, "sessions")
-	os.MkdirAll(dir, 0755)
-	data, _ := json.MarshalIndent(info, "", "  ")
-	os.WriteFile(sessionPath(info.TaskID, info.AgentName), append(data, '\n'), 0644)
-}
-
-// CleanupTask removes all session files for a given task.
+// CleanupTask removes all session files for a task.
 func CleanupTask(taskID string) {
 	dir := filepath.Join(config.Root, "sessions")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
+	prefix := fmt.Sprintf("dispatch-%s-", taskID)
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), taskID) && strings.HasSuffix(e.Name(), ".json") {
+		if strings.HasPrefix(e.Name(), prefix) && strings.HasSuffix(e.Name(), ".json") {
 			os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
@@ -298,9 +166,28 @@ func ListActive() ([]SessionInfo, error) {
 	return result, nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+// ListTaskSessions returns all sessions for a specific task.
+func ListTaskSessions(taskID string) []SessionInfo {
+	all, _ := ListActive()
+	var result []SessionInfo
+	for _, s := range all {
+		if s.TaskID == taskID {
+			result = append(result, s)
+		}
 	}
-	return b
+	return result
+}
+
+// --- Persistence ---
+
+func sessionPath(taskID, agentName, model string) string {
+	id := MakeSessionID(taskID, agentName, model)
+	return filepath.Join(config.Root, "sessions", id+".json")
+}
+
+func save(info *SessionInfo) {
+	dir := filepath.Join(config.Root, "sessions")
+	os.MkdirAll(dir, 0755)
+	data, _ := json.MarshalIndent(info, "", "  ")
+	os.WriteFile(filepath.Join(dir, info.SessionID+".json"), append(data, '\n'), 0644)
 }
