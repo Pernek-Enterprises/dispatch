@@ -32,17 +32,15 @@ type NotificationConfig struct {
 }
 
 type OpenClawConfig struct {
-	Binary         string                      `json:"binary"`
-	GatewayURL     string                      `json:"gatewayUrl"`
-	GatewayToken   string                      `json:"gatewayToken"`
-	SessionTimeout int                         `json:"sessionTimeout"`
-	SpawnMethod    string                      `json:"spawnMethod"`
-	Agents         map[string]OpenClawAgentCfg `json:"agents"`
+	// Path to the openclaw CLI binary
+	Binary string `json:"binary"`
+	// Agent name mapping: dispatch agent name → OpenClaw agent ID
+	Agents map[string]OpenClawAgentCfg `json:"agents"`
 }
 
 type OpenClawAgentCfg struct {
-	ID           string `json:"id"`
-	WorkspaceDir string `json:"workspaceDir"`
+	// OpenClaw agent ID (as shown in `openclaw agents list`)
+	ID string `json:"id"`
 }
 
 type Model struct {
@@ -77,9 +75,6 @@ func Load() (*Config, error) {
 	}
 	if cfg.OpenClaw.Binary == "" {
 		cfg.OpenClaw.Binary = "openclaw"
-	}
-	if cfg.OpenClaw.SpawnMethod == "" {
-		cfg.OpenClaw.SpawnMethod = "cli"
 	}
 	return cfg, nil
 }
