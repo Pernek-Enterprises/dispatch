@@ -1,4 +1,8 @@
-node_modules/
+# Binary
+dispatch
+dispatch-linux-*
+
+# Runtime data
 jobs/active/*
 jobs/done/*
 jobs/failed/*
