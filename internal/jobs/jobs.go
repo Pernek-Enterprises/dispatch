@@ -32,6 +32,13 @@ type Job struct {
 
 var slugRe = regexp.MustCompile(`[^a-z0-9-]`)
 
+// NewTaskID generates a short unique task ID.
+func NewTaskID() string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func newID(step, task string) string {
 	b := make([]byte, 4)
 	rand.Read(b)
