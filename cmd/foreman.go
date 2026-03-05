@@ -13,6 +13,7 @@ import (
 	"github.com/Pernek-Enterprises/dispatch/internal/llm"
 	"github.com/Pernek-Enterprises/dispatch/internal/log"
 	"github.com/Pernek-Enterprises/dispatch/internal/pipe"
+	"github.com/Pernek-Enterprises/dispatch/internal/sessions"
 	"github.com/Pernek-Enterprises/dispatch/internal/state"
 	"github.com/Pernek-Enterprises/dispatch/internal/workflows"
 )
@@ -189,6 +190,7 @@ func advanceWorkflow(cfg *config.Config, st *state.State, completedJob *jobs.Job
 		if ts, ok := st.Tasks[completedJob.Task]; ok {
 			ts.Status = "complete"
 		}
+		sessions.CleanupTask(completedJob.Task)
 		return
 	}
 
@@ -332,8 +334,8 @@ func dispatchPending(cfg *config.Config, st *state.State) {
 			jobs.Move(job.ID, "pending", "active")
 			st.Save()
 
-			// TODO: spawn OpenClaw session
-			log.Info("Job %s active — agent %s should pick it up", job.ID, job.Agent)
+			// Spawn or reuse OpenClaw session
+			dispatchToSession(cfg, job)
 			return // one work job at a time
 		}
 	}
@@ -367,6 +369,29 @@ func healthCheck(cfg *config.Config, st *state.State) {
 			jobs.WriteResult(job.ID, "active", fmt.Sprintf("TIMEOUT: exceeded %ds deadline", job.Timeout))
 			jobs.Move(job.ID, "active", "failed")
 		}
+	}
+}
+
+func dispatchToSession(cfg *config.Config, job jobs.Job) {
+	existing := sessions.Get(job.Task, job.Agent)
+
+	if existing != nil {
+		log.Info("Reusing session %s for %s/%s", existing.SessionKey, job.Task, job.Agent)
+		err := sessions.Send(&cfg.OpenClaw, existing, job.Prompt)
+		if err != nil {
+			log.Error("Failed to send to session %s: %v — spawning new", existing.SessionKey, err)
+			sessions.Destroy(job.Task, job.Agent)
+			existing = nil
+		}
+	}
+
+	if existing == nil {
+		session, err := sessions.Spawn(&cfg.OpenClaw, job.Task, job.Agent, job.Model, job.Prompt)
+		if err != nil {
+			log.Error("Failed to spawn session for %s/%s: %v", job.Task, job.Agent, err)
+			return
+		}
+		log.Info("Spawned session %s for %s/%s (model=%s)", session.SessionKey, job.Task, job.Agent, job.Model)
 	}
 }
 

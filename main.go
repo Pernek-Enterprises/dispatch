@@ -24,6 +24,8 @@ func main() {
 		cmd.Fail(os.Args[2:])
 	case "workflow":
 		cmd.Workflow(os.Args[2:])
+	case "sessions":
+		cmd.Sessions(os.Args[2:])
 	case "status":
 		cmd.Status()
 	case "--help", "-h", "help":

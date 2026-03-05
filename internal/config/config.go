@@ -18,12 +18,27 @@ func init() {
 }
 
 type Config struct {
-	PollIntervalMs    int               `json:"pollIntervalMs"`
-	PipePath          string            `json:"pipePath"`
-	MaxLoopIterations int               `json:"maxLoopIterations"`
-	SessionBackend    string            `json:"sessionBackend"`
-	DefaultTimeouts   map[string]int    `json:"defaultTimeouts"`
-	Notifications     map[string]string `json:"notifications"`
+	PollIntervalMs    int                `json:"pollIntervalMs"`
+	PipePath          string             `json:"pipePath"`
+	MaxLoopIterations int                `json:"maxLoopIterations"`
+	DefaultTimeouts   map[string]int     `json:"defaultTimeouts"`
+	Notifications     NotificationConfig `json:"notifications"`
+	OpenClaw          OpenClawConfig     `json:"openclaw"`
+}
+
+type NotificationConfig struct {
+	Escalation string `json:"escalation"`
+	Channel    string `json:"channel"`
+}
+
+type OpenClawConfig struct {
+	Binary         string            `json:"binary"`
+	WorkspaceDir   string            `json:"workspaceDir"`
+	GatewayURL     string            `json:"gatewayUrl"`
+	GatewayToken   string            `json:"gatewayToken"`
+	AgentIDs       map[string]string `json:"agentIds"`
+	SessionTimeout int               `json:"sessionTimeout"`
+	SpawnMethod    string            `json:"spawnMethod"`
 }
 
 type Model struct {
@@ -55,6 +70,12 @@ func Load() (*Config, error) {
 	}
 	if cfg.MaxLoopIterations == 0 {
 		cfg.MaxLoopIterations = 3
+	}
+	if cfg.OpenClaw.Binary == "" {
+		cfg.OpenClaw.Binary = "openclaw"
+	}
+	if cfg.OpenClaw.SpawnMethod == "" {
+		cfg.OpenClaw.SpawnMethod = "cli"
 	}
 	return cfg, nil
 }
@@ -95,7 +116,7 @@ func loadJSON(name string, v interface{}) error {
 func EnsureDirs() {
 	dirs := []string{
 		"jobs/pending", "jobs/active", "jobs/done", "jobs/failed",
-		"artifacts", "logs", "workflows",
+		"artifacts", "logs", "workflows", "sessions",
 	}
 	for _, d := range dirs {
 		os.MkdirAll(filepath.Join(Root, d), 0755)
