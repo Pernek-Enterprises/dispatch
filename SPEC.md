@@ -1,6 +1,6 @@
 # Dispatch — Local Agent Orchestration System
 
-**Version:** 0.2 (Draft)
+**Version:** 0.3
 **Date:** 2026-03-05
 **Authors:** Stefan Pernek, Cleo
 
@@ -23,117 +23,227 @@ The current agent orchestration (AgenticTodo queue → poller → skill → work
 
 - A **deterministic foreman loop** (pure code, no LLM) that manages state via files
 - **LLM calls as queued jobs** — triage, parsing, answering questions all go through the same queue as agent work
-- **Workflow templates** in plain markdown — one place to edit, one place to update
+- **Workflow definitions** with per-step model + agent + prompt configuration
 - **Model-aware scheduling** — knows which models are on which GPUs, prevents contention
+- A **`dispatch` CLI** that agents use to communicate back (complete, ask questions, fail)
+- **Persistent sessions per task** — all steps within a task share context, foreman manages lifecycle
 
 ### Architecture
 
 ```
-┌──────────────┐     ┌──────────────────────────────────┐
-│  AgenticTodo │     │         ~/dispatch/               │
-│  (task mgmt) │────▶│                                    │
-│  browser UI  │     │  foreman.js  (deterministic loop)  │
-└──────────────┘     │    ↕ reads/writes files            │
-                     │                                    │
-                     │  jobs/                              │
-                     │    pending/   ← new work            │
-                     │    active/    ← in progress         │
-                     │    done/      ← completed           │
-                     │    failed/    ← timed out / errored │
-                     │                                    │
-                     │  workflows/  ← markdown templates   │
-                     │  state.json  ← locks + agent status │
-                     │  models.json ← endpoint config      │
-                     └──────────┬───────────────────────┘
-                                │ spawns agents via
-                                │ llama-server API
-                                ▼
-                     ┌──────────────────────┐
-                     │   Local LLM Models   │
-                     │  9B  @ :8081 (Vulkan)│
-                     │  27B @ :8080 (Vulkan)│
-                     └──────────────────────┘
+┌──────────────┐     ┌──────────────────────────────────────┐
+│  AgenticTodo │     │            ~/dispatch/                │
+│  (task mgmt) │────▶│                                      │
+│  browser UI  │     │  foreman.js  (deterministic loop)    │
+└──────────────┘     │    ↕ reads/writes files              │
+                     │                                      │
+                     │  jobs/                                │
+                     │    pending/   ← queued work           │
+                     │    active/    ← in progress           │
+                     │    done/      ← completed             │
+                     │    failed/    ← timed out / errored   │
+                     │                                      │
+                     │  workflows/  ← step definitions       │
+                     │  state.json  ← locks + sessions       │
+                     │  models.json ← endpoint config        │
+                     │  agents.json ← agent registry         │
+                     │                                      │
+                     │  bin/dispatch  ← CLI for agents       │
+                     └──────────┬───────────────────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    │                       │
+              Direct API call         OpenClaw session
+              (triage/parse/answer)   (agent work)
+                    │                       │
+                    ▼                       ▼
+             ┌────────────┐         ┌──────────────┐
+             │ llama-server│         │  Agent (Kit,  │
+             │ 9B / 27B    │         │  Hawk, etc.)  │
+             └────────────┘         │  with tools   │
+                                    └──────────────┘
 ```
 
 ## 3. Core Concepts
 
-### 3.1 Job
+### 3.1 Workflows
 
-A job is a markdown file in `jobs/`. It moves through folders as it progresses:
+A workflow defines the steps to complete a type of task. Each step specifies its agent, model, prompt, artifacts, and how the agent communicates back.
+
+**Example: `workflows/coding-easy.md`**
+
+```markdown
+# Workflow: coding-easy
+
+Description: Simple coding tasks — bug fixes, small features, straightforward changes.
+
+## Steps
+
+### 1. spec
+agent: kit
+model: 27b
+timeout: 10m
+
+#### Artifacts
+- Task description
+- Linked issues/PRs (if any)
+
+#### Prompt
+Analyze this task and write a technical spec. Identify:
+- Root cause (for bugs) or requirements (for features)
+- Files likely affected
+- Approach and estimated complexity
+
+#### Instructions
+When done: `dispatch complete --artifact spec.md`
+If you need clarification: `dispatch ask "your question"`
+If this task is unclear or too large: `dispatch fail "reason"`
+
+---
+
+### 2. code
+agent: kit
+model: 9b
+timeout: 30m
+
+#### Artifacts
+- Spec from step 1
+
+#### Prompt
+Implement the spec. Create a branch (`agent/<task-id>-<slug>`), make changes, push.
+Write clean, tested code. Commit with clear messages.
+
+#### Instructions
+When done: `dispatch complete --artifact diff.patch`
+If stuck: `dispatch ask "your question"`
+If blocked: `dispatch fail "reason"`
+
+---
+
+### 3. review
+agent: hawk
+model: 9b
+timeout: 15m
+
+#### Artifacts
+- Code diff from step 2
+- Spec from step 1
+
+#### Prompt
+Review this implementation against the spec. Check for:
+- Correctness, edge cases, security
+- Code quality, naming, structure
+- Missing tests
+
+#### Instructions
+If approved: `dispatch complete --artifact review.md`
+If changes needed: `dispatch request-changes --artifact review.md`
+If fundamentally wrong: `dispatch fail "reason"`
+
+---
+
+### 4. fix
+agent: kit
+model: 27b
+timeout: 20m
+condition: only if step 3 requested changes
+
+#### Artifacts
+- Review feedback from step 3
+- Original spec from step 1
+
+#### Prompt
+Address the review feedback. Fix the issues identified, push updates.
+
+#### Instructions
+When done: `dispatch complete --artifact diff.patch`
+
+---
+
+### 5. approve
+agent: stefan
+model: null
+timeout: none
+
+#### Artifacts
+- PR link
+- Review summary
+
+#### Prompt
+(notification sent to Stefan — human review step)
+
+#### Instructions
+Human merges or requests further changes via dispatch CLI or UI.
+```
+
+**Key design:**
+- Model is per-step, not per-agent — Kit uses 27B for spec/fix, 9B for coding
+- Steps reference artifacts from previous steps (foreman passes them along)
+- Each step has explicit `dispatch` CLI instructions — agents know exactly how to communicate
+- Human steps (agent: stefan) block until human acts
+- Conditional steps (fix only if review requested changes)
+
+### 3.2 Jobs
+
+A job represents a single workflow step being executed. It moves through folders:
 
 ```
 pending/ → active/ → done/
                    → failed/
 ```
 
-**Job file format** (example: `jobs/pending/001-triage-auth-fix.md`):
+**Job file format** (example: `jobs/pending/001-spec-auth-fix.md`):
 
 ```markdown
-# Job: 001-triage-auth-fix
+# Job: 001-spec-auth-fix
 
-type: triage
-model: 9b
+task: auth-fix-mobile
+workflow: coding-easy
+step: 1 (spec)
+agent: kit
+model: 27b
+type: work
 priority: normal
 created: 2026-03-05T14:00:00Z
 deadline: 2026-03-05T14:10:00Z
-source_task: at_task_abc123
 
-## Input
+## Artifacts
 
-New task from AgenticTodo:
-Title: Fix auth redirect loop on mobile
-Description: Users on iOS Safari get stuck in a redirect loop after OAuth...
+Task: Fix auth redirect loop on mobile
+Description: Users on iOS Safari get stuck in a redirect loop after OAuth callback.
 Category: coding
-Status: execute
 
-## Workflow
+## Prompt
 
-Pick the appropriate workflow from: code-fix, code-review, code-new, research, general
-Determine model tier for each step.
-Output your decision as a simple plan.
+Analyze this task and write a technical spec. Identify:
+- Root cause
+- Files likely affected
+- Approach and estimated complexity
+
+## Instructions
+
+When done: `dispatch complete --artifact spec.md`
+If you need clarification: `dispatch ask "your question"`
+If this task is unclear or too large: `dispatch fail "reason"`
 
 ## Result
 
-(filled by the agent/LLM when complete)
+(filled when complete)
+
+## Questions
+
+(agent writes questions here via `dispatch ask`)
 ```
 
-### 3.2 Job Types
+### 3.3 Job Types
 
-| Type | Purpose | Model | Duration |
-|------|---------|-------|----------|
-| `triage` | Classify task, pick workflow, plan steps | 9B | ~5s |
-| `work` | Actual agent work (code, review, research) | 9B or 27B | 1-30 min |
-| `parse` | Interpret agent result, decide next step | 9B | ~5s |
-| `answer` | Answer an agent's question | 9B | ~5s |
-| `escalate` | Notify Stefan, pause until human input | none | indefinite |
-
-### 3.3 Workflows
-
-Markdown files in `workflows/` that describe what an agent should do. Plain english, no format contracts.
-
-Example `workflows/code-fix.md`:
-```markdown
-# Code Fix Workflow
-
-## Steps
-
-1. **Understand** (model: 9b, timeout: 5m)
-   Read the task description and any linked PR/issue.
-   Identify the root cause. Write your analysis.
-
-2. **Fix** (model: 27b, timeout: 20m)
-   Implement the fix. Create a branch, make changes, push.
-   Write a summary of what you changed and why.
-
-3. **Self-Review** (model: 9b, timeout: 5m)
-   Review your own changes. Check for obvious issues.
-   If problems found, go back to step 2.
-
-4. **Report** (model: 9b, timeout: 2m)
-   Write a completion summary for the task thread.
-```
-
-Each step becomes a job. The foreman creates them sequentially as prior steps complete.
+| Type | Dispatch method | Model | Duration |
+|------|----------------|-------|----------|
+| `triage` | Direct API call to llama-server | 9B | ~5s |
+| `work` | OpenClaw session | per step | 1-30 min |
+| `parse` | Direct API call to llama-server | 9B | ~5s |
+| `answer` | Direct API call to llama-server | 9B | ~5s |
+| `human` | Notification to Stefan | none | indefinite |
 
 ### 3.4 Agents
 
@@ -143,251 +253,330 @@ Each step becomes a job. The foreman creates them sequentially as prior steps co
 {
   "kit": {
     "role": "coder",
-    "capabilities": ["code-fix", "code-new", "code-review"],
-    "defaultModel": "27b"
+    "capabilities": ["code-fix", "code-new"]
   },
   "hawk": {
     "role": "reviewer",
-    "capabilities": ["code-review"],
-    "defaultModel": "9b"
+    "capabilities": ["code-review"]
+  },
+  "stefan": {
+    "role": "human",
+    "capabilities": ["approve", "decide"],
+    "notify": ["discord", "telegram"]
   }
 }
 ```
 
-The foreman uses this to decide which agent handles a job based on the workflow's requirements.
+No default models — models are defined per workflow step. An agent might use 9B for one step and 27B for another.
 
 ### 3.5 Sessions
 
-Each task gets a **persistent OpenClaw session** for its assigned agent. All steps within that task share the same session, preserving context.
+Each **task** gets a persistent OpenClaw session per agent. All steps for the same agent within a task share one session, preserving context.
 
-**Lifecycle (managed by foreman):**
-1. **Spawn** — when the first step of a task starts, foreman creates a session (e.g. `kit-fix-auth-001`)
-2. **Send** — subsequent steps in the same task are sent to the existing session
-3. **Memory** — on task completion, foreman sends a "write a memory summary of this work" instruction
-4. **Destroy** — after memory is written, foreman destroys the session
+**Example: task "auth-fix-mobile"**
 
-Agents never manage their own sessions. They receive instructions, do work, respond. The foreman owns the full lifecycle.
+| Step | Agent | Session |
+|------|-------|---------|
+| 1. spec | kit | `kit-auth-fix-001` (spawned) |
+| 2. code | kit | `kit-auth-fix-001` (reused) |
+| 3. review | hawk | `hawk-auth-fix-001` (spawned) |
+| 4. fix | kit | `kit-auth-fix-001` (reused — has full context) |
+| 5. approve | stefan | no session (human) |
+
+**Lifecycle (managed entirely by foreman):**
+1. **Spawn** — first step for an agent on a task → create session
+2. **Send** — subsequent steps for same agent + task → send to existing session
+3. **Memory** — on task completion → send "write a memory summary of this work" to each session
+4. **Destroy** — after memory is written → destroy all sessions for this task
 
 ### 3.6 State
 
-**`state.json`** — the lock table:
+**`state.json`** — the lock table + session registry:
 
 ```json
 {
   "models": {
     "9b": { "busy": false, "job": null, "since": null },
-    "27b": { "busy": true, "job": "003-fix-auth", "since": "2026-03-05T14:05:00Z" }
+    "27b": { "busy": true, "job": "001-spec-auth-fix", "since": "2026-03-05T14:00:00Z" }
   },
   "agents": {
     "kit": {
       "busy": true,
-      "job": "003-fix-auth",
-      "session": "kit-fix-auth-001",
-      "since": "2026-03-05T14:05:00Z"
+      "job": "001-spec-auth-fix",
+      "since": "2026-03-05T14:00:00Z"
     },
-    "hawk": { "busy": false, "job": null, "session": null, "since": null }
-  }
-}
-```
-
-**`models.json`** — endpoint configuration:
-
-```json
-{
-  "9b": {
-    "name": "Qwen3.5-9B",
-    "endpoint": "http://localhost:8081/v1",
-    "vram_gb": 5.3,
-    "gpu": "R9700"
+    "hawk": {
+      "busy": false,
+      "job": null,
+      "since": null
+    }
   },
-  "27b": {
-    "name": "Qwen3.5-27B",
-    "endpoint": "http://localhost:8080/v1",
-    "gpu": "R9700",
-    "vram_gb": 15.6
+  "sessions": {
+    "auth-fix-mobile": {
+      "kit": { "sessionKey": "kit-auth-fix-001", "created": "2026-03-05T14:00:00Z" },
+      "hawk": null
+    }
+  },
+  "tasks": {
+    "auth-fix-mobile": {
+      "workflow": "coding-easy",
+      "currentStep": 1,
+      "status": "active",
+      "created": "2026-03-05T13:55:00Z"
+    }
   }
 }
 ```
 
-### 3.5 Model Contention
+## 4. The `dispatch` CLI
 
-The R9700 can only run one model at a time via llama-server. Two approaches:
+A lightweight CLI installed in agent sessions. Agents use it to communicate with the foreman without knowing dispatch internals.
 
-**Option A: Multiple llama-server instances (if VRAM allows)**
-- 9B (5.3 GB) + 27B (15.6 GB) = 20.9 GB — fits in 32 GB
-- Two servers on different ports, both Vulkan
-- No contention for different model tiers
+### Commands
 
-**Option B: Single server, model swapping**
-- One llama-server, swap models when needed
-- Slower (model load time) but simpler
-- Better if context windows eat too much VRAM
+```bash
+# Mark current step as complete, optionally attach artifacts
+dispatch complete
+dispatch complete --artifact spec.md
+dispatch complete --artifact diff.patch --message "Fixed the redirect loop"
 
-**Recommendation:** Start with Option A. Both models fit comfortably. Fall back to B if memory pressure becomes an issue with large contexts.
+# Request changes (review steps)
+dispatch request-changes --artifact review.md
 
-## 4. Foreman Loop
+# Ask a question (may be auto-answered by LLM or escalated to human)
+dispatch ask "Should I split this into two PRs?"
 
-The foreman is a **deterministic Node.js script** (~100-200 lines). No LLM calls. Runs every 30 seconds via systemd timer or internal setInterval.
+# Report failure
+dispatch fail "Cannot reproduce the bug on latest main"
+
+# Check status
+dispatch status
+
+# Get artifact from a previous step
+dispatch artifact get spec.md
+dispatch artifact list
+```
+
+### How it works
+
+The CLI writes to a lightweight communication channel — options:
+
+**Option A: File-based**
+- `dispatch complete` → writes a `.complete` marker + result to the job's active file
+- `dispatch ask` → appends to the `## Questions` section of the job file
+- Foreman picks up on next cycle (≤30s latency)
+
+**Option B: Unix socket / HTTP**
+- Foreman runs a tiny local server (e.g. `localhost:9090`)
+- CLI POSTs to it → immediate response
+- Lower latency, foreman can react instantly
+
+**Recommendation:** Start with Option A (file-based) for simplicity. Move to B if latency matters.
+
+### Agent instructions
+
+Every job includes `## Instructions` that tell the agent exactly which `dispatch` commands to use. The agent doesn't need to know the dispatch system — just run the commands listed.
+
+## 5. Foreman Loop
+
+The foreman is a **deterministic Node.js script**. No LLM calls. Runs every 30 seconds via internal setInterval.
 
 ### Each cycle:
 
 ```
-1. Read state.json (locks)
-2. Check active/ jobs for timeouts
-   - Past deadline? → move to failed/, release locks
-   - Agent heartbeat stale? → move to failed/, release locks
-3. Check done/ for completed jobs
-   - Read result from job file
-   - If job was part of a workflow:
-     → Create next step as new job in pending/
-     → Or create a "parse" job to interpret the result
-   - Release locks (model + agent)
-4. Scan pending/ for eligible jobs
+1. Read state.json (locks, sessions, task progress)
+
+2. Check active/ jobs for signals
+   - .complete marker? → read result, move to done/, release locks
+   - .failed marker? → move to failed/, release locks
+   - New question in job file? → create answer job in pending/
+   - Past deadline? → move to failed/, release locks, alert Stefan
+
+3. Process done/ jobs (advance workflows)
+   - Read the completed job's task + workflow + step
+   - Determine next step:
+     → If conditional step and condition not met → skip
+     → If next step exists → create new job in pending/
+     → If last step → task complete, trigger memory + session cleanup
+     → If step requested changes → route to fix step
+   - Pass artifacts from completed step to next job
+
+4. Scan pending/ for dispatchable jobs
    - Sort by priority, then creation time
    - For each job:
-     → Does it need a model? Is that model free?
-     → Does it need an agent? Is that agent free?
+     → Is the required model free?
+     → Is the required agent free?
      → If both free: claim locks, move to active/, dispatch
+   - Quick LLM jobs (triage/parse/answer): call API directly, write result, done
+   - Agent work jobs: spawn or send to OpenClaw session
+
 5. Write updated state.json
+
+6. Cleanup: archive old done/failed jobs (>7 days)
 ```
 
-### Dispatching a job:
+### Dispatching an agent work job:
 
-**Hybrid dispatch — two paths based on job type:**
-
-**Quick LLM jobs** (triage, parse, answer): Direct HTTP POST to the model's `/v1/chat/completions` endpoint. Foreman reads response, writes to job file, moves to done/. Fast, no session overhead.
-
-**Agent work jobs** (work): Dispatched via OpenClaw sessions.
-- First step of a task → `sessions_spawn` with task instructions → save `sessionKey` in state
-- Subsequent steps → `sessions_send` to existing session
-- Completion → send "write memory summary" → `sessions_destroy`
-
-Agents get full tool access (exec, git, file read/write, browser, etc.) through the OpenClaw session. They never interact with dispatch directly — they just receive instructions and do work.
-
-### Heartbeat mechanism:
-
-Active agent jobs must have their file's mtime updated periodically (agent writes progress). Foreman checks: if `mtime` is older than `timeout / 2`, agent is probably stuck.
-
-## 5. Agent ↔ Dispatch Communication
-
-**All communication is via the job file.** No APIs, no JSON contracts.
-
-### Dispatch → Agent:
-The job file IS the instruction. Agent reads it, does the work.
-
-### Agent → Dispatch:
-Agent writes its result into the `## Result` section of the job file, then moves it to `done/` (or signals completion by writing a `.done` marker file).
-
-### Agent asks a question:
-Agent writes to a `## Questions` section in its job file:
-```markdown
-## Questions
-
-Q1: The PR has conflicts with main. Should I rebase or merge?
-Status: pending
+```javascript
+// First step for this agent on this task?
+if (!state.sessions[taskId]?.[agent]) {
+  // Spawn new session
+  const session = await openclawSpawn({
+    task: jobContent,
+    label: `${agent}-${taskId}`,
+    model: modelEndpoint
+  });
+  state.sessions[taskId][agent] = { sessionKey: session.key };
+} else {
+  // Send to existing session
+  await openclawSend({
+    sessionKey: state.sessions[taskId][agent].sessionKey,
+    message: jobContent
+  });
+}
 ```
 
-Foreman sees the question on next cycle, creates an `answer` job. When answered:
-```markdown
-Q1: The PR has conflicts with main. Should I rebase or merge?
-Status: answered
-Answer: Rebase onto main, resolve conflicts, force push.
+### Task completion:
+
+```javascript
+// All steps done — cleanup
+for (const [agent, session] of Object.entries(state.sessions[taskId])) {
+  if (session) {
+    await openclawSend({
+      sessionKey: session.sessionKey,
+      message: "Task complete. Write a memory summary of what you did, decisions made, and lessons learned."
+    });
+    // Wait for memory write, then destroy
+    await openclawDestroy(session.sessionKey);
+  }
+}
+delete state.sessions[taskId];
 ```
 
-Agent checks its own file periodically for answers.
+## 6. Model Contention
 
-### Escalation:
-If the `answer` job's LLM response includes uncertainty markers or the question is flagged high-stakes, foreman creates an `escalate` job instead → sends notification to Stefan (Discord/Telegram). Job stays active but paused until human responds.
+Both models run simultaneously on the R9700 (Vulkan):
+- **9B** on port 8081 (~5.3 GB VRAM)
+- **27B** on port 8080 (~15.6 GB VRAM)
+- Total: ~21 GB of 32 GB — room for context windows
 
-## 6. Integration Points
+Each model server handles one request at a time. The foreman's lock table prevents concurrent requests to the same model. If both models are busy, jobs wait in pending/.
 
-### AgenticTodo (later, Phase 4):
-- Foreman reads new tasks from AgenticTodo API
-- Foreman writes results back via API
-- AgenticTodo UI shows dispatch state (read-only from `state.json`)
-- This is optional — dispatch works standalone with manual job files
+Quick LLM jobs (triage/parse/answer) also respect model locks — they're queued like everything else. A triage job needing the 9B waits if an agent is using the 9B.
 
-### OpenClaw (optional):
-- Can spawn agents via OpenClaw sessions
-- Can deliver notifications via OpenClaw channels
-- Not required — dispatch can call llama-server directly
+## 7. Questions & Escalation
 
-### Notifications:
-- Escalations → Stefan via Discord/Telegram
-- Completions → optional summary to channel
-- Failures → alert Stefan
+### Auto-answer flow:
+1. Agent calls `dispatch ask "question"`
+2. CLI writes question to job file
+3. Foreman sees it → creates an `answer` job (model: 9B)
+4. When 9B is free → foreman sends question + task context to model
+5. Model responds → foreman writes answer back to job file
+6. Agent reads answer (polling or notification via CLI)
 
-## 7. File Structure
+### Escalation flow:
+1. Answer job's LLM response includes uncertainty ("I'm not sure", "this depends on business requirements")
+2. OR question is tagged as high-stakes by the agent (`dispatch ask --escalate "..."`)
+3. Foreman creates a `human` job instead → sends notification to Stefan
+4. Agent stays in `active/` but paused
+5. Stefan responds (via Discord, CLI, or future UI) → foreman writes answer, agent continues
+
+### Timeout flow:
+1. Job exceeds its deadline
+2. Foreman moves to failed/, releases locks
+3. Creates a new triage job: "This step timed out. Here's what the agent was doing. Decide: retry, skip, or escalate."
+4. Triage determines next action
+
+## 8. File Structure
 
 ```
 ~/dispatch/
-├── foreman.js              ← the loop (deterministic, no LLM)
-├── state.json              ← lock table
+├── foreman.js              ← the deterministic loop
+├── bin/
+│   └── dispatch            ← CLI for agents
+├── state.json              ← locks, sessions, task progress
 ├── models.json             ← endpoint config
-├── config.json             ← foreman settings (poll interval, timeouts)
+├── agents.json             ← agent registry
+├── config.json             ← foreman settings
 ├── workflows/
-│   ├── code-fix.md
+│   ├── coding-easy.md
+│   ├── coding-complex.md
 │   ├── code-review.md
-│   ├── code-new.md
 │   ├── research.md
 │   └── general.md
 ├── jobs/
-│   ├── pending/            ← ready to be picked up
-│   ├── active/             ← currently being worked on
-│   ├── done/               ← completed successfully
-│   └── failed/             ← timed out or errored
+│   ├── pending/
+│   ├── active/
+│   ├── done/
+│   └── failed/
+├── artifacts/
+│   └── <task-id>/          ← artifacts passed between steps
+│       ├── spec.md
+│       ├── diff.patch
+│       └── review.md
 └── logs/
-    └── 2026-03-05.log      ← foreman activity log
+    └── 2026-03-05.log
 ```
 
-## 8. Implementation Plan
+## 9. Implementation Plan
 
 ### Phase 0: Clean Slate
-- [ ] Stop queue poller on Mac Mini (`launchctl unload`)
+- [ ] Stop queue poller on Mac Mini
 - [ ] Stop queue poller on Clawdia (if running)
 - [ ] Don't delete — disable for rollback
 
-### Phase 1: Infrastructure + Foreman
-- [ ] Set up dual llama-server (9B on :8081, 27B on :8080) as systemd services
-- [ ] Create `~/dispatch/` file structure
-- [ ] Write `models.json` and `config.json`
-- [ ] Build foreman.js — the core loop
-  - File scanning, lock management, timeout detection
-  - Job dispatching (HTTP to llama-server)
-  - State persistence
-- [ ] Set up as systemd service (every 30s or internal loop)
+### Phase 1: Core Foreman
+- [ ] Dual llama-server already running (9B :8081, 27B :8080) ✅
+- [ ] Create `~/dispatch/` file structure on Clawdia
+- [ ] Write `models.json`, `agents.json`, `config.json`
+- [ ] Build `foreman.js` — core loop:
+  - State management (read/write state.json)
+  - Job scanning (pending → active → done)
+  - Lock management (model + agent)
+  - Timeout detection
+  - Direct LLM dispatch (triage/parse/answer jobs)
+- [ ] Build `bin/dispatch` CLI:
+  - `complete`, `fail`, `ask`, `status`, `artifact`
+  - File-based communication with foreman
+- [ ] Set up foreman as systemd service
 - [ ] Test with manually created job files
 
-### Phase 2: Triage + Workflows
-- [ ] Write workflow templates (start with 3-4)
-- [ ] Implement triage as a job type — foreman creates triage job for new tasks
-- [ ] Test: manual task → triage job → work job → completion
+### Phase 2: Workflows + Triage
+- [ ] Write 2-3 workflow templates (coding-easy, code-review, general)
+- [ ] Implement triage job type — new task → LLM picks workflow
+- [ ] Implement workflow step advancement
+- [ ] Implement artifact passing between steps
+- [ ] Test: manual task → triage → first work step
 
 ### Phase 3: Agent Integration
-- [ ] Wire up agent spawning (OpenClaw sessions or direct LLM calls)
+- [ ] Wire up OpenClaw session management (spawn/send/destroy)
+- [ ] Implement session persistence across workflow steps
+- [ ] Implement memory write + cleanup on task completion
 - [ ] Implement question/answer flow
 - [ ] Implement escalation to Stefan
-- [ ] Test end-to-end: task → triage → work → parse → done
+- [ ] End-to-end test: task → triage → work → review → done
 
-### Phase 4: Polish + Integration
-- [ ] AgenticTodo reads dispatch state for browser UI
+### Phase 4: Polish
+- [ ] AgenticTodo integration (read tasks, write results)
 - [ ] Notification delivery (Discord/Telegram)
+- [ ] Web UI for dispatch state
 - [ ] Open source packaging
-- [ ] Second GPU model serving (RTX 3070 for embeddings/reranking)
 
-## 9. Success Criteria
+## 10. Success Criteria
 
-- **One file to change** for workflow updates (the workflow markdown)
-- **Zero format contracts** between dispatch and agents
+- **One file to change** for workflow updates
+- **Zero format contracts** — agents use `dispatch` CLI, not JSON
 - **No silent failures** — every stuck job gets detected and handled
-- **Full state visibility** — `ls jobs/` tells you everything
-- **Model-aware** — no two jobs fight for the same GPU
-- **< 5 second overhead** per dispatch cycle
+- **Full visibility** — `ls jobs/` + `cat state.json` tells you everything
+- **Model-aware** — no two jobs fight for the same model
+- **Context preserved** — agent keeps full history within a task
+- **Human in the loop** — Stefan is a first-class step in workflows
 
-## 10. Open Questions
+## 11. Open Questions
 
-1. **Single vs dual llama-server:** Can we run 9B + 27B simultaneously on the R9700? Need to test VRAM with context windows.
-2. **Agent spawning mechanism:** OpenClaw sessions vs direct llama-server API calls vs something else?
-3. **AgenticTodo integration timing:** Do we keep the API integration or go fully file-based initially?
-4. **Notification channel:** Discord #strategy? Telegram? Both?
-5. **Job ID scheme:** Sequential (001, 002...) or timestamp-based or UUID?
+1. ~~Single vs dual llama-server~~ → **Resolved: dual, both running** ✅
+2. **CLI communication:** File-based (simple, 30s latency) vs socket (instant)? Start file-based.
+3. **Job ID scheme:** Sequential? Timestamp? UUID? → Recommend timestamp-based: `20260305-140000-spec-auth-fix`
+4. **Artifact storage:** In the job file or separate `artifacts/<task>/` folder? → Recommend separate folder for binary artifacts.
+5. **AgenticTodo integration timing:** Phase 4, or do we need it earlier for task intake?
+6. **Notification channel for escalations:** Discord #strategy? Telegram DM?
