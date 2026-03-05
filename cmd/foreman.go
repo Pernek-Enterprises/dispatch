@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -230,15 +231,19 @@ func advanceWorkflow(cfg *config.Config, st *state.State, completedJob *jobs.Job
 	ts.Status = "active"
 	ts.Iteration[nextStepName] = stepIter
 
-	// Build prompt
+	// Build prompt: system prompt + step prompt + artifacts + communication
+	systemPrompt := loadSystemPrompt(nextStep.Agent)
+
 	artifactDir := filepath.Join(config.Root, "artifacts", completedJob.Task)
 	artifactNote := ""
 	if len(nextStep.ArtifactsIn) > 0 {
 		artifactNote = fmt.Sprintf("\n\n## Artifacts\nAvailable in: %s\nFiles: %s", artifactDir, joinStrings(nextStep.ArtifactsIn))
 	}
 
-	prompt := fmt.Sprintf("# Task: %s\n\n## Step: %s\n\n%s%s\n\n## Communication\n- Done: `dispatch done \"summary\"`\n- Attach: `dispatch done --artifact file.md \"summary\"`\n- Help: `dispatch ask \"question\"`\n- Blocked: `dispatch fail \"reason\"`",
+	stepPrompt := fmt.Sprintf("# Task: %s\n\n## Step: %s\n\n%s%s",
 		completedJob.Task, nextStepName, nextStep.Prompt, artifactNote)
+
+	prompt := systemPrompt + "\n\n---\n\n" + stepPrompt
 
 	jobType := "work"
 	if nextStep.Agent == "stefan" || nextStep.Type == "human" {
@@ -370,6 +375,26 @@ func healthCheck(cfg *config.Config, st *state.State) {
 			jobs.Move(job.ID, "active", "failed")
 		}
 	}
+}
+
+// loadSystemPrompt loads prompts/system.md + prompts/<agent>.md (if exists).
+func loadSystemPrompt(agentName string) string {
+	promptsDir := filepath.Join(config.Root, "prompts")
+	var parts []string
+
+	// Shared system prompt
+	if data, err := os.ReadFile(filepath.Join(promptsDir, "system.md")); err == nil {
+		parts = append(parts, strings.TrimSpace(string(data)))
+	}
+
+	// Agent-specific prompt
+	if agentName != "" && agentName != "stefan" {
+		if data, err := os.ReadFile(filepath.Join(promptsDir, agentName+".md")); err == nil {
+			parts = append(parts, strings.TrimSpace(string(data)))
+		}
+	}
+
+	return strings.Join(parts, "\n\n")
 }
 
 func dispatchToSession(cfg *config.Config, job jobs.Job) {
