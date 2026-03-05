@@ -102,6 +102,9 @@ func handleEvent(cfg *config.Config, st *state.State, msg pipe.Message) {
 		handleFail(cfg, st, msg)
 	case "ask":
 		handleAsk(cfg, st, msg)
+	case "new_task":
+		log.Info("New task submitted: %s", msg.TaskID)
+		// dispatchPending will pick it up below
 	default:
 		log.Warn("Unknown event type: %s", msg.Type)
 	}
