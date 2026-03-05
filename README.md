@@ -10,6 +10,9 @@ Route tasks to local LLMs, manage model contention, coordinate agents — all th
 git clone https://github.com/Pernek-Enterprises/dispatch.git
 cd dispatch
 
+# Build
+make build
+
 # Configure for your installation
 cp config.json.example config.json
 cp models.json.example models.json
@@ -21,7 +24,7 @@ cp agents.json.example agents.json
 # - config.json: poll interval, pipe path, timeouts
 
 # Run the foreman
-node foreman.js
+./dispatch foreman
 ```
 
 ## How it works
@@ -93,12 +96,16 @@ dispatch fail "reason it failed"           # report failure
 
 ```
 ~/dispatch/
-├── foreman.js          ← deterministic loop (no LLM)
-├── bin/dispatch.js     ← agent CLI
+├── dispatch            ← single binary (foreman + CLI)
 ├── config.json         ← your settings
 ├── models.json         ← your model endpoints
 ├── agents.json         ← your agents
-├── workflows/          ← markdown workflow templates
+├── workflows/
+│   ├── coding-easy.json       ← workflow definition
+│   └── coding-easy/
+│       ├── spec.prompt.md     ← per-step prompts
+│       ├── code.prompt.md
+│       └── review.prompt.md
 ├── jobs/
 │   ├── pending/        ← queued
 │   ├── active/         ← in progress
