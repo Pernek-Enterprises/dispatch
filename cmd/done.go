@@ -10,35 +10,47 @@ import (
 )
 
 func Done(args []string) {
-	artifacts, message := parseAgentArgs(args)
-	if message == "" && len(artifacts) == 0 {
-		fmt.Fprintln(os.Stderr, "dispatch: usage: dispatch done \"message\"")
+	f := ParseAgentFlags(args)
+	if f.Message == "" && len(f.Artifacts) == 0 {
+		fmt.Fprintln(os.Stderr, `dispatch done — report step completion
+
+Usage:
+  dispatch done --job <id> "result message"
+  dispatch done --job <id> --artifact spec.md "wrote the spec"
+  dispatch done --job <id> --task <id> --root /path/to/dispatch "message"
+
+Flags:
+  --job, -j       Job ID (or DISPATCH_JOB_ID env)
+  --task, -t      Task ID (or DISPATCH_TASK_ID env)
+  --root          Dispatch root dir (or DISPATCH_ROOT env)
+  --pipe          Named pipe path (or DISPATCH_PIPE env)
+  --artifact, -a  Artifact file to copy (repeatable)`)
 		os.Exit(1)
 	}
 
-	jobID := os.Getenv("DISPATCH_JOB_ID")
-	taskID := os.Getenv("DISPATCH_TASK_ID")
-
-	// Copy artifacts
-	artifactNames := copyArtifacts(artifacts, taskID)
-
-	// Write result file
-	if jobID != "" {
-		resultPath := filepath.Join(config.Root, "jobs", "active", jobID+".result.md")
-		content := message
-		if len(artifactNames) > 0 {
-			content += "\n\nArtifacts: " + join(artifactNames, ", ")
-		}
-		os.WriteFile(resultPath, []byte(content+"\n"), 0644)
+	if f.JobID == "" {
+		fmt.Fprintln(os.Stderr, "dispatch: --job is required (or set DISPATCH_JOB_ID)")
+		os.Exit(1)
 	}
 
+	// Copy artifacts
+	artifactNames := copyArtifacts(f.Artifacts, f.TaskID)
+
+	// Write result file
+	resultPath := filepath.Join(config.Root, "jobs", "active", f.JobID+".result.md")
+	content := f.Message
+	if len(artifactNames) > 0 {
+		content += "\n\nArtifacts: " + join(artifactNames, ", ")
+	}
+	os.WriteFile(resultPath, []byte(content+"\n"), 0644)
+
 	// Notify foreman
-	pipePath := getPipePath()
+	pipePath := getPipePathWithOverride(f.Pipe)
 	err := pipe.Send(pipePath, pipe.Message{
 		Type:      "done",
-		JobID:     jobID,
-		TaskID:    taskID,
-		Message:   message,
+		JobID:     f.JobID,
+		TaskID:    f.TaskID,
+		Message:   f.Message,
 		Artifacts: artifactNames,
 	})
 	if err != nil {
@@ -47,8 +59,8 @@ func Done(args []string) {
 	}
 
 	suffix := ""
-	if len(artifacts) > 0 {
-		suffix = fmt.Sprintf(" (%d artifact%s)", len(artifacts), plural(len(artifacts)))
+	if len(f.Artifacts) > 0 {
+		suffix = fmt.Sprintf(" (%d artifact%s)", len(f.Artifacts), plural(len(f.Artifacts)))
 	}
 	fmt.Printf("✓ Step complete%s\n", suffix)
 }

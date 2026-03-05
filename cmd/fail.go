@@ -10,32 +10,41 @@ import (
 )
 
 func Fail(args []string) {
-	message := joinArgs(args)
-	if message == "" {
-		fmt.Fprintln(os.Stderr, "dispatch: usage: dispatch fail \"reason\"")
+	f := ParseAgentFlags(args)
+	if f.Message == "" {
+		fmt.Fprintln(os.Stderr, `dispatch fail — report step failure
+
+Usage:
+  dispatch fail --job <id> "reason for failure"
+
+Flags:
+  --job, -j       Job ID (or DISPATCH_JOB_ID env)
+  --task, -t      Task ID (or DISPATCH_TASK_ID env)
+  --root          Dispatch root dir (or DISPATCH_ROOT env)
+  --pipe          Named pipe path (or DISPATCH_PIPE env)`)
 		os.Exit(1)
 	}
 
-	jobID := os.Getenv("DISPATCH_JOB_ID")
-	taskID := os.Getenv("DISPATCH_TASK_ID")
-
-	// Write failure result
-	if jobID != "" {
-		resultPath := filepath.Join(config.Root, "jobs", "active", jobID+".result.md")
-		os.WriteFile(resultPath, []byte("FAILED: "+message+"\n"), 0644)
+	if f.JobID == "" {
+		fmt.Fprintln(os.Stderr, "dispatch: --job is required (or set DISPATCH_JOB_ID)")
+		os.Exit(1)
 	}
 
-	pipePath := getPipePath()
+	// Write failure result
+	resultPath := filepath.Join(config.Root, "jobs", "active", f.JobID+".result.md")
+	os.WriteFile(resultPath, []byte("FAILED: "+f.Message+"\n"), 0644)
+
+	pipePath := getPipePathWithOverride(f.Pipe)
 	err := pipe.Send(pipePath, pipe.Message{
 		Type:   "fail",
-		JobID:  jobID,
-		TaskID: taskID,
-		Reason: message,
+		JobID:  f.JobID,
+		TaskID: f.TaskID,
+		Reason: f.Message,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dispatch: failed to notify foreman: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("✗ Step failed: %s\n", message)
+	fmt.Printf("✗ Step failed: %s\n", f.Message)
 }

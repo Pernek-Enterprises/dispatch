@@ -558,12 +558,53 @@ func loadSystemPrompt(agentName string) string {
 }
 
 func dispatchToSession(cfg *config.Config, job jobs.Job) {
+	// Append dispatch instructions to the prompt so the agent knows how to signal completion
+	prompt := job.Prompt + dispatchInstructions(job)
+
 	// Session = task + agent + model (spawned lazily on first use)
-	err := sessions.Dispatch(&cfg.OpenClaw, job.Task, job.Agent, job.Model, job.Prompt)
+	err := sessions.Dispatch(&cfg.OpenClaw, job.Task, job.Agent, job.Model, prompt)
 	if err != nil {
 		log.Error("Failed to dispatch to %s/%s/%s: %v", job.Task, job.Agent, job.Model, err)
 		// Don't fail the job — stays active, will retry on next poll
 	}
+}
+
+// dispatchInstructions returns the instructions appended to every agent prompt
+// telling it how to signal done/ask/fail via the dispatch CLI.
+func dispatchInstructions(job jobs.Job) string {
+	return fmt.Sprintf(`
+
+---
+
+## Dispatch Communication
+
+When you finish this step, signal completion by running:
+
+`+"```bash"+`
+dispatch done --job %s "brief summary of what you did"
+`+"```"+`
+
+To attach artifacts (files to pass to next steps):
+
+`+"```bash"+`
+dispatch done --job %s --artifact path/to/file.md "summary"
+`+"```"+`
+
+If you're stuck and need help:
+
+`+"```bash"+`
+dispatch ask --job %s "your question"
+dispatch ask --job %s --escalate "need human decision"
+`+"```"+`
+
+If you cannot complete this step:
+
+`+"```bash"+`
+dispatch fail --job %s "reason for failure"
+`+"```"+`
+
+**You MUST call one of these commands when done. Do not just stop.**`,
+		job.ID, job.ID, job.ID, job.ID, job.ID)
 }
 
 func joinStrings(ss []string) string {
