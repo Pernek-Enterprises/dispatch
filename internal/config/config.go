@@ -120,7 +120,7 @@ func loadJSON(name string, v interface{}) error {
 func EnsureDirs() {
 	dirs := []string{
 		"jobs/pending", "jobs/active", "jobs/done", "jobs/failed",
-		"artifacts", "logs", "workflows", "sessions",
+		"artifacts", "logs", "workflows", "sessions", "prompts",
 	}
 	for _, d := range dirs {
 		os.MkdirAll(filepath.Join(Root, d), 0755)
