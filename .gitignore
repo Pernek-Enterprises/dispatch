@@ -15,3 +15,7 @@ models.json
 agents.json
 config.json
 state.json
+
+# Local prompts (use .example files as templates)
+prompts/*.md
+!prompts/*.md.example
