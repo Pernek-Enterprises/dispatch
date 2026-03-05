@@ -23,11 +23,21 @@ type Step struct {
 	Prompt        string            `json:"-"` // loaded from file
 }
 
+type DestroyConfig struct {
+	// Which agents to run the destroy prompt on (empty = all agents involved in the workflow)
+	Agents  []string `json:"agents,omitempty"`
+	// Timeout for each agent's destroy step
+	Timeout int      `json:"timeout,omitempty"`
+	// Foreman actions to run after agents complete destroy
+	Actions []string `json:"actions"`
+}
+
 type Workflow struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	FirstStep   string          `json:"firstStep"`
 	Steps       map[string]Step `json:"steps"`
+	Destroy     DestroyConfig   `json:"destroy"`
 }
 
 func Load(name string) (*Workflow, error) {
@@ -42,7 +52,7 @@ func Load(name string) (*Workflow, error) {
 		return nil, fmt.Errorf("invalid workflow %s: %w", name, err)
 	}
 
-	// Load prompts
+	// Load step prompts
 	promptDir := filepath.Join(config.Root, "workflows", name)
 	for stepName, step := range wf.Steps {
 		promptPath := filepath.Join(promptDir, stepName+".prompt.md")
@@ -50,6 +60,14 @@ func Load(name string) (*Workflow, error) {
 			step.Prompt = strings.TrimSpace(string(pdata))
 		}
 		wf.Steps[stepName] = step
+	}
+
+	// Set destroy defaults
+	if wf.Destroy.Timeout == 0 {
+		wf.Destroy.Timeout = 120
+	}
+	if len(wf.Destroy.Actions) == 0 {
+		wf.Destroy.Actions = []string{"close_sessions", "archive_artifacts"}
 	}
 
 	return &wf, nil
@@ -79,6 +97,23 @@ func GetNextStep(wf *Workflow, currentStep, result string) string {
 	}
 
 	return "" // terminal step
+}
+
+// GetDestroyAgents returns the agents to run destroy on.
+// If destroy.agents is empty, returns all non-human agents used in the workflow.
+func GetDestroyAgents(wf *Workflow) []string {
+	if len(wf.Destroy.Agents) > 0 {
+		return wf.Destroy.Agents
+	}
+	seen := make(map[string]bool)
+	var agents []string
+	for _, step := range wf.Steps {
+		if step.Agent != "" && step.Agent != "stefan" && step.Type != "human" && !seen[step.Agent] {
+			seen[step.Agent] = true
+			agents = append(agents, step.Agent)
+		}
+	}
+	return agents
 }
 
 func ListAll() ([]string, error) {
@@ -160,6 +195,36 @@ func Validate(wf *Workflow) []string {
 	for name := range stepNames {
 		if !reachable[name] {
 			errs = append(errs, fmt.Sprintf("step %q is unreachable from firstStep", name))
+		}
+	}
+
+	// Validate destroy agent references
+	for _, agent := range wf.Destroy.Agents {
+		if agent == "stefan" {
+			continue
+		}
+		// Check agent is used in at least one step
+		found := false
+		for _, step := range wf.Steps {
+			if step.Agent == agent {
+				found = true
+				break
+			}
+		}
+		if !found {
+			errs = append(errs, fmt.Sprintf("destroy: agent %q not used in any step", agent))
+		}
+	}
+
+	// Validate destroy actions
+	validActions := map[string]bool{
+		"close_sessions":    true,
+		"archive_artifacts": true,
+		"cleanup_jobs":      true,
+	}
+	for _, action := range wf.Destroy.Actions {
+		if !validActions[action] {
+			errs = append(errs, fmt.Sprintf("destroy: unknown action %q", action))
 		}
 	}
 

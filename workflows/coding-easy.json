@@ -44,5 +44,9 @@
       "type": "human",
       "timeout": 0
     }
+  },
+  "destroy": {
+    "timeout": 120,
+    "actions": ["close_sessions", "archive_artifacts"]
   }
 }

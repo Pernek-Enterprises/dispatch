@@ -145,6 +145,12 @@ func workflowShow(name string) {
 		}
 		fmt.Printf("      %s...\n\n", prompt)
 	}
+
+	// Destroy config
+	destroyAgents := workflows.GetDestroyAgents(wf)
+	fmt.Printf("  ### destroy\n")
+	fmt.Printf("      agents: %s  timeout: %s\n", strings.Join(destroyAgents, ", "), formatTimeout(wf.Destroy.Timeout))
+	fmt.Printf("      actions: %s\n\n", strings.Join(wf.Destroy.Actions, ", "))
 }
 
 func workflowValidate(name string) {

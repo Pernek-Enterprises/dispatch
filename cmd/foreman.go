@@ -185,13 +185,17 @@ func advanceWorkflow(cfg *config.Config, st *state.State, completedJob *jobs.Job
 		return
 	}
 
+	// Check if this was a destroy step completing
+	if strings.HasPrefix(completedJob.Step, "_destroy:") {
+		handleDestroyComplete(cfg, st, completedJob)
+		return
+	}
+
 	nextStepName := workflows.GetNextStep(wf, completedJob.Step, result)
 	if nextStepName == "" {
-		log.Info("Task %s complete (workflow=%s)", completedJob.Task, completedJob.Workflow)
-		if ts, ok := st.Tasks[completedJob.Task]; ok {
-			ts.Status = "complete"
-		}
-		sessions.CleanupTask(completedJob.Task)
+		// Terminal step reached — enter destroy phase
+		log.Info("Task %s reached terminal step — starting destroy phase", completedJob.Task)
+		startDestroy(cfg, st, completedJob.Task, wf)
 		return
 	}
 
@@ -375,6 +379,159 @@ func healthCheck(cfg *config.Config, st *state.State) {
 			jobs.Move(job.ID, "active", "failed")
 		}
 	}
+}
+
+// =============================================================================
+// Destroy Phase
+// =============================================================================
+
+// startDestroy kicks off the destroy phase — sends destroy prompt to each involved agent.
+func startDestroy(cfg *config.Config, st *state.State, taskID string, wf *workflows.Workflow) {
+	agents := workflows.GetDestroyAgents(wf)
+	if len(agents) == 0 {
+		// No agents to destroy — run foreman cleanup directly
+		log.Info("No agents for destroy phase — running cleanup")
+		runDestroyActions(cfg, st, taskID, wf)
+		return
+	}
+
+	// Load destroy prompt
+	destroyPrompt := loadDestroyPrompt(wf.Name)
+
+	// Track how many destroy jobs we're waiting for
+	ts := st.Tasks[taskID]
+	if ts == nil {
+		ts = &state.TaskState{
+			Workflow:   wf.Name,
+			Iteration:  make(map[string]int),
+		}
+		st.Tasks[taskID] = ts
+	}
+	ts.Status = "destroying"
+	ts.CurrentStep = "_destroy"
+
+	for _, agentName := range agents {
+		// Find the model this agent last used (use smallest available)
+		model := getAgentModel(wf, agentName)
+
+		prompt := fmt.Sprintf("# Task: %s — Destroy Phase\n\n%s\n\n## Context\nWorkflow: %s\nYour role: %s\nArtifacts dir: %s",
+			taskID, destroyPrompt, wf.Name, agentName,
+			filepath.Join(config.Root, "artifacts", taskID))
+
+		stepName := fmt.Sprintf("_destroy:%s", agentName)
+
+		_, err := jobs.Create(jobs.CreateOpts{
+			Task:     taskID,
+			Workflow: wf.Name,
+			Step:     stepName,
+			Agent:    agentName,
+			Model:    model,
+			Type:     "work",
+			Priority: "high",
+			Timeout:  wf.Destroy.Timeout,
+			Prompt:   prompt,
+		})
+		if err != nil {
+			log.Error("Failed to create destroy job for %s: %v", agentName, err)
+			continue
+		}
+		log.Info("Created destroy job for agent %s on task %s", agentName, taskID)
+	}
+}
+
+// handleDestroyComplete processes a completed destroy step.
+// When all agents have completed destroy, runs foreman cleanup actions.
+func handleDestroyComplete(cfg *config.Config, st *state.State, completedJob *jobs.Job) {
+	taskID := completedJob.Task
+
+	// Check if any other destroy jobs are still pending/active for this task
+	pending, _ := jobs.List("pending")
+	active, _ := jobs.List("active")
+
+	for _, j := range append(pending, active...) {
+		if j.Task == taskID && strings.HasPrefix(j.Step, "_destroy:") && j.ID != completedJob.ID {
+			log.Info("Destroy: still waiting for %s on task %s", j.Step, taskID)
+			return
+		}
+	}
+
+	// All destroy jobs done — run foreman actions
+	log.Info("All agents completed destroy for task %s — running cleanup", taskID)
+
+	wf, err := workflows.Load(completedJob.Workflow)
+	if err != nil {
+		log.Warn("Workflow %s not found for cleanup: %v", completedJob.Workflow, err)
+		// Still do basic cleanup
+		sessions.CleanupTask(taskID)
+		return
+	}
+
+	runDestroyActions(cfg, st, taskID, wf)
+}
+
+// runDestroyActions executes the foreman-side cleanup actions.
+func runDestroyActions(cfg *config.Config, st *state.State, taskID string, wf *workflows.Workflow) {
+	for _, action := range wf.Destroy.Actions {
+		switch action {
+		case "close_sessions":
+			sessions.CleanupTask(taskID)
+			log.Info("Destroy: closed sessions for task %s", taskID)
+
+		case "archive_artifacts":
+			// Artifacts already in artifacts/<task-id>/ — just log
+			log.Info("Destroy: artifacts preserved in artifacts/%s/", taskID)
+
+		case "cleanup_jobs":
+			// Move any remaining job files to done
+			cleanupJobFiles(taskID)
+			log.Info("Destroy: cleaned up job files for task %s", taskID)
+		}
+	}
+
+	// Mark task complete
+	if ts, ok := st.Tasks[taskID]; ok {
+		ts.Status = "complete"
+	}
+	log.Info("Task %s fully complete (destroy phase done)", taskID)
+}
+
+func cleanupJobFiles(taskID string) {
+	for _, folder := range []string{"pending", "active"} {
+		jobList, _ := jobs.List(folder)
+		for _, j := range jobList {
+			if j.Task == taskID {
+				jobs.Move(j.ID, folder, "done")
+			}
+		}
+	}
+}
+
+// getAgentModel finds the last/smallest model used by an agent in a workflow.
+func getAgentModel(wf *workflows.Workflow, agentName string) string {
+	model := ""
+	for _, step := range wf.Steps {
+		if step.Agent == agentName && step.Model != "" {
+			model = step.Model
+		}
+	}
+	return model
+}
+
+// loadDestroyPrompt loads the destroy prompt from workflows/<name>/destroy.prompt.md
+func loadDestroyPrompt(workflowName string) string {
+	promptPath := filepath.Join(config.Root, "workflows", workflowName, "destroy.prompt.md")
+	data, err := os.ReadFile(promptPath)
+	if err != nil {
+		// Default destroy prompt
+		return `This task is complete. Before your session closes:
+
+1. Write a brief summary of what you did to your memory/session notes
+2. Note any lessons learned or gotchas for future similar tasks
+3. Clean up any temporary files you created
+
+When done: ` + "`dispatch done \"cleanup complete\"`"
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // loadSystemPrompt loads prompts/system.md + prompts/<agent>.md (if exists).
