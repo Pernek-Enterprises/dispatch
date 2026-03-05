@@ -125,7 +125,16 @@ func handleDone(cfg *config.Config, st *state.State, msg pipe.Message) {
 		return
 	}
 
-	result := jobs.ReadResult(msg.JobID, "active")
+	// Use the pipe message as primary result source (always available).
+	// Fall back to result file on disk (may not exist if agent had wrong DISPATCH_ROOT).
+	result := msg.Message
+	if result == "" {
+		result = jobs.ReadResult(msg.JobID, "active")
+	}
+	// Also persist the result to the file for archival (in case it came via pipe only)
+	if result != "" {
+		jobs.WriteResult(msg.JobID, "active", result)
+	}
 	log.Info("Job done: %s (step=%s)", msg.JobID, meta.Step)
 
 	if meta.Model != "" {
@@ -147,6 +156,11 @@ func handleFail(cfg *config.Config, st *state.State, msg pipe.Message) {
 	}
 
 	log.Warn("Job failed: %s — %s", msg.JobID, msg.Reason)
+
+	// Persist failure reason to result file for archival
+	if msg.Reason != "" {
+		jobs.WriteResult(msg.JobID, "active", "FAILED: "+msg.Reason)
+	}
 
 	if meta.Model != "" {
 		st.UnlockModel(meta.Model)
@@ -576,6 +590,7 @@ func dispatchToSession(cfg *config.Config, job jobs.Job) {
 // dispatchInstructions returns the instructions appended to every agent prompt
 // telling it how to signal done/ask/fail via the dispatch CLI.
 func dispatchInstructions(job jobs.Job) string {
+	root := config.Root
 	return fmt.Sprintf(`
 
 ---
@@ -585,30 +600,30 @@ func dispatchInstructions(job jobs.Job) string {
 When you finish this step, signal completion by running:
 
 `+"```bash"+`
-dispatch done --job %s "brief summary of what you did"
+dispatch done --job %s --root %s "brief summary of what you did"
 `+"```"+`
 
 To attach artifacts (files to pass to next steps):
 
 `+"```bash"+`
-dispatch done --job %s --artifact path/to/file.md "summary"
+dispatch done --job %s --root %s --artifact path/to/file.md "summary"
 `+"```"+`
 
 If you're stuck and need help:
 
 `+"```bash"+`
-dispatch ask --job %s "your question"
-dispatch ask --job %s --escalate "need human decision"
+dispatch ask --job %s --root %s "your question"
+dispatch ask --job %s --root %s --escalate "need human decision"
 `+"```"+`
 
 If you cannot complete this step:
 
 `+"```bash"+`
-dispatch fail --job %s "reason for failure"
+dispatch fail --job %s --root %s "reason for failure"
 `+"```"+`
 
 **You MUST call one of these commands when done. Do not just stop.**`,
-		job.ID, job.ID, job.ID, job.ID, job.ID)
+		job.ID, root, job.ID, root, job.ID, root, job.ID, root, job.ID, root)
 }
 
 func joinStrings(ss []string) string {
