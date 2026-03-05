@@ -545,10 +545,10 @@ artifacts/
 | Model locking | Yes, exclusive per job | Safer, predictable performance |
 | Polling | Only for intake + health checks | Everything else is event-driven |
 
-## 17. Open Questions
+## 17. Resolved (formerly Open) Questions
 
-1. **CLI → foreman notification mechanism:** Unix signal? Named pipe? HTTP localhost? Named pipe is simplest and most reliable on Linux.
-2. **Job ID scheme:** Timestamp-based (`20260305-140000-spec-auth-fix`) — confirm?
-3. **Max review loop iterations:** Default 3? Configurable per workflow?
-4. **Task intake:** Manual files first, AgenticTodo API in Phase 4?
-5. **Notification channel for escalations:** Discord #strategy?
+1. **CLI → foreman notification:** Named pipe (`/tmp/dispatch.pipe`). Simple, instant, no dependencies.
+2. **Job ID scheme:** UUID (`crypto.randomUUID()`). Slug appended for readability: `a1b2c3d4-spec-auth-fix`.
+3. **Max review loop:** Default 3, configurable per workflow via `max_iterations` on loop steps.
+4. **Task intake:** Manual files in Phase 1. AgenticTodo API integration in Phase 4.
+5. **Escalation channel:** Telegram (Stefan's primary).
