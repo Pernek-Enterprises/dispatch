@@ -18,10 +18,21 @@ import { log } from './lib/log.js';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
-// --- Config ---
-const config = loadConfig('config');
+// --- Config (all from config.json — nothing hardcoded) ---
+let config;
+try {
+  config = loadConfig('config');
+} catch (err) {
+  console.error(`\n  ${err.message}\n`);
+  console.error('  To get started:');
+  console.error('    cp config.json.example config.json');
+  console.error('    cp models.json.example models.json');
+  console.error('    cp agents.json.example agents.json');
+  console.error('  Then edit each file for your installation.\n');
+  process.exit(1);
+}
 const POLL_INTERVAL = config.pollIntervalMs || 30000;
-const MAX_LOOP_DEFAULT = 3;
+const MAX_LOOP_DEFAULT = config.maxLoopIterations || 3;
 
 // --- Ensure directories ---
 for (const dir of ['jobs/pending', 'jobs/active', 'jobs/done', 'jobs/failed', 'artifacts', 'logs']) {

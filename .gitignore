@@ -5,3 +5,9 @@ jobs/failed/*
 logs/*
 !jobs/**/.gitkeep
 !logs/.gitkeep
+
+# Local config (use .example files as templates)
+models.json
+agents.json
+config.json
+state.json

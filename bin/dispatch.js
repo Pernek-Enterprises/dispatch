@@ -10,11 +10,21 @@
  *   dispatch fail "reason for failure"
  */
 
-import { writeFileSync, existsSync, copyFileSync, mkdirSync } from 'fs';
+import { writeFileSync, readFileSync, existsSync, copyFileSync, mkdirSync } from 'fs';
 import { join, basename, resolve } from 'path';
 
-const PIPE_PATH = process.env.DISPATCH_PIPE || '/tmp/dispatch.pipe';
 const DISPATCH_ROOT = process.env.DISPATCH_ROOT || join(process.env.HOME, 'dispatch');
+
+// Read pipe path from config, fall back to env/default
+let PIPE_PATH;
+try {
+  const configPath = join(DISPATCH_ROOT, 'config.json');
+  if (existsSync(configPath)) {
+    const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    PIPE_PATH = config.pipePath;
+  }
+} catch { /* ignore */ }
+PIPE_PATH = PIPE_PATH || process.env.DISPATCH_PIPE || '/tmp/dispatch.pipe';
 const JOB_ID = process.env.DISPATCH_JOB_ID;
 const TASK_ID = process.env.DISPATCH_TASK_ID;
 
