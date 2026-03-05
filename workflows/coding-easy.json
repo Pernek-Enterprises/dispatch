@@ -1,0 +1,48 @@
+{
+  "name": "coding-easy",
+  "description": "Simple coding tasks — bug fixes, small features, straightforward changes.",
+  "firstStep": "spec",
+  "steps": {
+    "spec": {
+      "agent": "kit",
+      "model": "27b",
+      "timeout": 600,
+      "next": "code",
+      "artifactsIn": [],
+      "artifactsOut": ["spec.md"]
+    },
+    "code": {
+      "agent": "kit",
+      "model": "9b",
+      "timeout": 1800,
+      "next": "review",
+      "artifactsIn": ["spec.md"],
+      "artifactsOut": ["diff.patch"]
+    },
+    "review": {
+      "agent": "hawk",
+      "model": "9b",
+      "timeout": 900,
+      "branch": {
+        "ACCEPTED": "ready",
+        "DENIED": "fix"
+      },
+      "maxIterations": 3,
+      "artifactsIn": ["spec.md", "diff.patch"],
+      "artifactsOut": ["review.md"]
+    },
+    "fix": {
+      "agent": "kit",
+      "model": "27b",
+      "timeout": 1200,
+      "next": "review",
+      "artifactsIn": ["review.md", "spec.md"],
+      "artifactsOut": ["diff.patch"]
+    },
+    "ready": {
+      "agent": "stefan",
+      "type": "human",
+      "timeout": 0
+    }
+  }
+}

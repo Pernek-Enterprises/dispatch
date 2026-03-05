@@ -85,6 +85,19 @@ function copyArtifacts(artifacts) {
 const command = process.argv[2];
 const cmdArgs = process.argv.slice(3);
 
+// Subcommand routing
+if (command === 'workflow') {
+  // Delegate to workflow CLI
+  const { execFileSync } = await import('child_process');
+  const workflowCli = join(new URL('.', import.meta.url).pathname, 'dispatch-workflow.js');
+  try {
+    execFileSync('node', [workflowCli, ...process.argv.slice(2)], { stdio: 'inherit', env: { ...process.env, DISPATCH_ROOT } });
+  } catch (e) {
+    process.exit(e.status || 1);
+  }
+  process.exit(0);
+}
+
 if (!command || command === '--help' || command === '-h') {
   console.log(`dispatch — agent communication CLI
 
@@ -94,6 +107,7 @@ Commands:
   dispatch ask "question"              Ask a question
   dispatch ask --escalate "question"   Ask and escalate to human
   dispatch fail "reason"               Report failure
+  dispatch workflow list|show|validate|create   Manage workflows
 
 Environment:
   DISPATCH_JOB_ID    Current job ID (set by foreman)
