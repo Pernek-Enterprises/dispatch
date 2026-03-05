@@ -14,14 +14,19 @@
   },
   "openclaw": {
     "binary": "openclaw",
-    "workspaceDir": "",
     "gatewayUrl": "",
     "gatewayToken": "",
     "spawnMethod": "cli",
     "sessionTimeout": 0,
-    "agentIds": {
-      "kit": "kit",
-      "hawk": "hawk"
+    "agents": {
+      "kit": {
+        "id": "kit",
+        "workspaceDir": "/home/kit/.openclaw/workspace"
+      },
+      "hawk": {
+        "id": "hawk",
+        "workspaceDir": "/home/hawk/.openclaw/workspace"
+      }
     }
   }
 }
