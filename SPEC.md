@@ -1,6 +1,6 @@
 # Dispatch — Local Agent Orchestration System
 
-**Version:** 0.1 (Draft)
+**Version:** 0.2 (Draft)
 **Date:** 2026-03-05
 **Authors:** Stefan Pernek, Cleo
 
@@ -135,7 +135,40 @@ Example `workflows/code-fix.md`:
 
 Each step becomes a job. The foreman creates them sequentially as prior steps complete.
 
-### 3.4 State
+### 3.4 Agents
+
+**`agents.json`** — agent registry:
+
+```json
+{
+  "kit": {
+    "role": "coder",
+    "capabilities": ["code-fix", "code-new", "code-review"],
+    "defaultModel": "27b"
+  },
+  "hawk": {
+    "role": "reviewer",
+    "capabilities": ["code-review"],
+    "defaultModel": "9b"
+  }
+}
+```
+
+The foreman uses this to decide which agent handles a job based on the workflow's requirements.
+
+### 3.5 Sessions
+
+Each task gets a **persistent OpenClaw session** for its assigned agent. All steps within that task share the same session, preserving context.
+
+**Lifecycle (managed by foreman):**
+1. **Spawn** — when the first step of a task starts, foreman creates a session (e.g. `kit-fix-auth-001`)
+2. **Send** — subsequent steps in the same task are sent to the existing session
+3. **Memory** — on task completion, foreman sends a "write a memory summary of this work" instruction
+4. **Destroy** — after memory is written, foreman destroys the session
+
+Agents never manage their own sessions. They receive instructions, do work, respond. The foreman owns the full lifecycle.
+
+### 3.6 State
 
 **`state.json`** — the lock table:
 
@@ -146,8 +179,13 @@ Each step becomes a job. The foreman creates them sequentially as prior steps co
     "27b": { "busy": true, "job": "003-fix-auth", "since": "2026-03-05T14:05:00Z" }
   },
   "agents": {
-    "kit": { "busy": true, "job": "003-fix-auth", "since": "2026-03-05T14:05:00Z" },
-    "hawk": { "busy": false, "job": null, "since": null }
+    "kit": {
+      "busy": true,
+      "job": "003-fix-auth",
+      "session": "kit-fix-auth-001",
+      "since": "2026-03-05T14:05:00Z"
+    },
+    "hawk": { "busy": false, "job": null, "session": null, "since": null }
   }
 }
 ```
@@ -215,9 +253,16 @@ The foreman is a **deterministic Node.js script** (~100-200 lines). No LLM calls
 
 ### Dispatching a job:
 
-For LLM jobs (triage, parse, answer): HTTP POST to the model endpoint directly. Read response, write to job file, move to done/.
+**Hybrid dispatch — two paths based on job type:**
 
-For agent work jobs: Spawn via OpenClaw session or direct llama-server call with the workflow instructions as system prompt + job input as user message.
+**Quick LLM jobs** (triage, parse, answer): Direct HTTP POST to the model's `/v1/chat/completions` endpoint. Foreman reads response, writes to job file, moves to done/. Fast, no session overhead.
+
+**Agent work jobs** (work): Dispatched via OpenClaw sessions.
+- First step of a task → `sessions_spawn` with task instructions → save `sessionKey` in state
+- Subsequent steps → `sessions_send` to existing session
+- Completion → send "write memory summary" → `sessions_destroy`
+
+Agents get full tool access (exec, git, file read/write, browser, etc.) through the OpenClaw session. They never interact with dispatch directly — they just receive instructions and do work.
 
 ### Heartbeat mechanism:
 
