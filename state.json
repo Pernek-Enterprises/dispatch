@@ -1,7 +1,0 @@
-{
-  "models": {
-    "9b": { "busy": false, "job": null, "since": null },
-    "27b": { "busy": false, "job": null, "since": null }
-  },
-  "agents": {}
-}
