@@ -20,8 +20,8 @@
     "spawnMethod": "cli",
     "sessionTimeout": 0,
     "agentIds": {
-      "kit": "",
-      "hawk": ""
+      "kit": "kit",
+      "hawk": "hawk"
     }
   }
 }

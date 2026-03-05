@@ -127,6 +127,9 @@ func handleDone(cfg *config.Config, st *state.State, msg pipe.Message) {
 	}
 
 	jobs.Move(msg.JobID, "active", "done")
+
+	// Check if workflow is advancing to a different agent — if so, clean up session
+	// (session reuse happens only within the same task+agent)
 	advanceWorkflow(cfg, st, meta, result)
 }
 

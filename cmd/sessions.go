@@ -44,6 +44,6 @@ func sessionsList() {
 	fmt.Println("Active sessions:")
 	for _, s := range active {
 		fmt.Printf("  %s/%s  key=%s  model=%s  created=%s\n",
-			s.TaskID, s.Agent, s.SessionKey, s.Model, s.Created)
+			s.TaskID, s.AgentName, s.SessionKey, s.Model, s.CreatedAt)
 	}
 }
