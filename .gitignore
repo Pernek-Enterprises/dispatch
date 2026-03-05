@@ -1,0 +1,7 @@
+node_modules/
+jobs/active/*
+jobs/done/*
+jobs/failed/*
+logs/*
+!jobs/**/.gitkeep
+!logs/.gitkeep

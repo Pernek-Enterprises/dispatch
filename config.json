@@ -1,0 +1,12 @@
+{
+  "pollIntervalMs": 30000,
+  "defaultTimeouts": {
+    "triage": 60,
+    "work": 1800,
+    "parse": 60,
+    "answer": 60
+  },
+  "notifications": {
+    "escalation": "discord"
+  }
+}
