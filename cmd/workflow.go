@@ -89,9 +89,12 @@ func workflowShow(name string) {
 	for current != "" && !visited[current] {
 		visited[current] = true
 		step := wf.Steps[current]
-		agent := step.Agent
-		if agent == "" {
-			agent = step.Type
+		role := step.Role
+		if role == "" {
+			role = step.Agent
+		}
+		if role == "" {
+			role = step.Type
 		}
 		model := ""
 		if step.Model != "" {
@@ -104,17 +107,17 @@ func workflowShow(name string) {
 			for k, v := range step.Branch {
 				branches = append(branches, fmt.Sprintf("%s → %s", k, v))
 			}
-			fmt.Printf("  %s (%s%s %s) → {%s}\n", current, agent, model, timeout, strings.Join(branches, ", "))
+			fmt.Printf("  %s (%s%s %s) → {%s}\n", current, role, model, timeout, strings.Join(branches, ", "))
 			// Follow first branch for display
 			for _, v := range step.Branch {
 				current = v
 				break
 			}
 		} else if step.Next != "" {
-			fmt.Printf("  %s (%s%s %s) → %s\n", current, agent, model, timeout, step.Next)
+			fmt.Printf("  %s (%s%s %s) → %s\n", current, role, model, timeout, step.Next)
 			current = step.Next
 		} else {
-			fmt.Printf("  %s (%s%s %s) ■\n", current, agent, model, timeout)
+			fmt.Printf("  %s (%s%s %s) ■\n", current, role, model, timeout)
 			current = ""
 		}
 	}
@@ -130,13 +133,16 @@ func workflowShow(name string) {
 			prompt = "(no prompt)"
 		}
 
-		agent := step.Agent
-		if agent == "" {
-			agent = step.Type
+		role := step.Role
+		if role == "" {
+			role = step.Agent // backward compat
+		}
+		if role == "" {
+			role = step.Type
 		}
 
 		fmt.Printf("  ### %s\n", name)
-		fmt.Printf("      agent: %s  model: %s  timeout: %s\n", agent, orDash(step.Model), formatTimeout(step.Timeout))
+		fmt.Printf("      role: %s  model: %s  timeout: %s\n", role, orDash(step.Model), formatTimeout(step.Timeout))
 		if len(step.ArtifactsIn) > 0 {
 			fmt.Printf("      in: %s\n", strings.Join(step.ArtifactsIn, ", "))
 		}

@@ -11,7 +11,8 @@ import (
 )
 
 type Step struct {
-	Agent         string            `json:"agent"`
+	Agent         string            `json:"agent,omitempty"` // deprecated, use role
+	Role          string            `json:"role,omitempty"`  // e.g. "coder", "reviewer"
 	Model         string            `json:"model,omitempty"`
 	Timeout       int               `json:"timeout,omitempty"`
 	Next          string            `json:"next,omitempty"`
@@ -99,21 +100,32 @@ func GetNextStep(wf *Workflow, currentStep, result string) string {
 	return "" // terminal step
 }
 
+// GetRole returns the effective role for a step (role field, or agent field for compat).
+func GetRole(step Step) string {
+	if step.Role != "" {
+		return step.Role
+	}
+	return step.Agent // backward compat
+}
+
 // GetDestroyAgents returns the agents to run destroy on.
 // If destroy.agents is empty, returns all non-human agents used in the workflow.
+// GetDestroyAgents returns agents/roles to run destroy on (backward compat).
+// With Pi, destroy is optional since processes are ephemeral.
 func GetDestroyAgents(wf *Workflow) []string {
 	if len(wf.Destroy.Agents) > 0 {
 		return wf.Destroy.Agents
 	}
 	seen := make(map[string]bool)
-	var agents []string
+	var roles []string
 	for _, step := range wf.Steps {
-		if step.Agent != "" && step.Agent != "stefan" && step.Type != "human" && !seen[step.Agent] {
-			seen[step.Agent] = true
-			agents = append(agents, step.Agent)
+		role := GetRole(step)
+		if role != "" && role != "stefan" && step.Type != "human" && !seen[role] {
+			seen[role] = true
+			roles = append(roles, role)
 		}
 	}
-	return agents
+	return roles
 }
 
 func ListAll() ([]string, error) {
@@ -167,8 +179,8 @@ func Validate(wf *Workflow) []string {
 				errs = append(errs, fmt.Sprintf("step %q: branch %s → %q not found", name, keyword, target))
 			}
 		}
-		if step.Agent == "" && step.Type == "" {
-			errs = append(errs, fmt.Sprintf("step %q: missing agent", name))
+		if step.Agent == "" && step.Role == "" && step.Type == "" {
+			errs = append(errs, fmt.Sprintf("step %q: missing role (or agent)", name))
 		}
 	}
 

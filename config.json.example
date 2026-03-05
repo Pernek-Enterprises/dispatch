@@ -12,11 +12,8 @@
     "escalation": "telegram",
     "channel": ""
   },
-  "openclaw": {
-    "binary": "openclaw",
-    "agents": {
-      "kit": { "id": "kit" },
-      "hawk": { "id": "hawk" }
-    }
+  "pi": {
+    "binary": "pi",
+    "defaultTools": ["read", "bash", "edit", "write"]
   }
 }

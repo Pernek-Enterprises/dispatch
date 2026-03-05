@@ -4,7 +4,7 @@
   "firstStep": "spec",
   "steps": {
     "spec": {
-      "agent": "kit",
+      "role": "coder",
       "model": "27b",
       "timeout": 600,
       "next": "code",
@@ -12,7 +12,7 @@
       "artifactsOut": ["spec.md"]
     },
     "code": {
-      "agent": "kit",
+      "role": "coder",
       "model": "9b",
       "timeout": 1800,
       "next": "review",
@@ -20,7 +20,7 @@
       "artifactsOut": ["diff.patch"]
     },
     "review": {
-      "agent": "hawk",
+      "role": "reviewer",
       "model": "9b",
       "timeout": 900,
       "branch": {
@@ -32,7 +32,7 @@
       "artifactsOut": ["review.md"]
     },
     "fix": {
-      "agent": "kit",
+      "role": "coder",
       "model": "27b",
       "timeout": 1200,
       "next": "review",
@@ -40,13 +40,12 @@
       "artifactsOut": ["diff.patch"]
     },
     "ready": {
-      "agent": "stefan",
       "type": "human",
       "timeout": 0
     }
   },
   "destroy": {
-    "timeout": 120,
-    "actions": ["close_sessions", "archive_artifacts"]
+    "timeout": 60,
+    "actions": ["archive_artifacts", "cleanup_jobs"]
   }
 }
