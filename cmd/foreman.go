@@ -58,9 +58,12 @@ func Foreman() {
 	}
 	log.Info("Listening on pipe: %s", cfg.PipePath)
 
-	// Pipe listener (blocking goroutine)
+	// Event channel — all mutations go through here (single goroutine processes them)
+	eventCh := make(chan pipe.Message, 64)
+
+	// Pipe listener feeds events into the channel
 	go pipe.Listen(cfg.PipePath, func(msg pipe.Message) {
-		handleEvent(cfg, st, msg)
+		eventCh <- msg
 	})
 
 	// Initial dispatch
@@ -79,6 +82,8 @@ func Foreman() {
 
 	for {
 		select {
+		case msg := <-eventCh:
+			handleEvent(cfg, st, msg)
 		case <-ticker.C:
 			healthCheck(cfg, st)
 			dispatchPending(cfg, st)
@@ -346,9 +351,8 @@ func dispatchPending(cfg *config.Config, st *state.State) {
 			jobs.Move(job.ID, "pending", "active")
 			st.Save()
 
-			// Spawn or reuse OpenClaw session
+			// Spawn or reuse OpenClaw session (non-blocking)
 			dispatchToSession(cfg, job)
-			return // one work job at a time
 		}
 	}
 }
