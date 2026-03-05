@@ -24,6 +24,8 @@ func main() {
 		cmd.Fail(os.Args[2:])
 	case "workflow":
 		cmd.Workflow(os.Args[2:])
+	case "sessions":
+		cmd.Sessions(os.Args[2:])
 	case "status":
 		cmd.Status()
 	case "--help", "-h", "help":
@@ -46,6 +48,7 @@ Commands:
   dispatch ask --escalate "question"   Ask and escalate to human
   dispatch fail "reason"               Report failure
   dispatch workflow list|show|validate|create  Manage workflows
+  dispatch sessions list|cleanup       Manage agent sessions
   dispatch status                      Show current state
 
 Environment:

@@ -21,9 +21,31 @@ type Config struct {
 	PollIntervalMs    int               `json:"pollIntervalMs"`
 	PipePath          string            `json:"pipePath"`
 	MaxLoopIterations int               `json:"maxLoopIterations"`
-	SessionBackend    string            `json:"sessionBackend"`
 	DefaultTimeouts   map[string]int    `json:"defaultTimeouts"`
-	Notifications     map[string]string `json:"notifications"`
+	Notifications     NotificationConfig `json:"notifications"`
+	OpenClaw          OpenClawConfig    `json:"openclaw"`
+}
+
+type NotificationConfig struct {
+	Escalation string `json:"escalation"` // "telegram", "discord", etc.
+	Channel    string `json:"channel"`    // channel ID or name
+}
+
+type OpenClawConfig struct {
+	// Path to the openclaw CLI binary
+	Binary string `json:"binary"`
+	// Working directory (where openclaw workspace lives)
+	WorkspaceDir string `json:"workspaceDir"`
+	// Gateway URL for API calls (if using HTTP instead of CLI)
+	GatewayURL string `json:"gatewayUrl"`
+	// Gateway token for authentication
+	GatewayToken string `json:"gatewayToken"`
+	// Agent IDs mapped from dispatch agent names to OpenClaw agent IDs
+	AgentIDs map[string]string `json:"agentIds"`
+	// Session timeout in seconds (0 = no timeout)
+	SessionTimeout int `json:"sessionTimeout"`
+	// How to spawn sessions: "cli" or "api"
+	SpawnMethod string `json:"spawnMethod"`
 }
 
 type Model struct {
@@ -55,6 +77,12 @@ func Load() (*Config, error) {
 	}
 	if cfg.MaxLoopIterations == 0 {
 		cfg.MaxLoopIterations = 3
+	}
+	if cfg.OpenClaw.Binary == "" {
+		cfg.OpenClaw.Binary = "openclaw"
+	}
+	if cfg.OpenClaw.SpawnMethod == "" {
+		cfg.OpenClaw.SpawnMethod = "cli"
 	}
 	return cfg, nil
 }
@@ -95,7 +123,7 @@ func loadJSON(name string, v interface{}) error {
 func EnsureDirs() {
 	dirs := []string{
 		"jobs/pending", "jobs/active", "jobs/done", "jobs/failed",
-		"artifacts", "logs", "workflows",
+		"artifacts", "logs", "workflows", "sessions",
 	}
 	for _, d := range dirs {
 		os.MkdirAll(filepath.Join(Root, d), 0755)

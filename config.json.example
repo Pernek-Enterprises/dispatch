@@ -1,15 +1,27 @@
 {
   "pollIntervalMs": 30000,
   "pipePath": "/tmp/dispatch.pipe",
+  "maxLoopIterations": 3,
   "defaultTimeouts": {
     "triage": 60,
     "work": 1800,
     "parse": 60,
     "answer": 60
   },
-  "maxLoopIterations": 3,
-  "sessionBackend": "openclaw",
   "notifications": {
-    "escalation": "telegram"
+    "escalation": "telegram",
+    "channel": ""
+  },
+  "openclaw": {
+    "binary": "openclaw",
+    "workspaceDir": "",
+    "gatewayUrl": "",
+    "gatewayToken": "",
+    "spawnMethod": "cli",
+    "sessionTimeout": 0,
+    "agentIds": {
+      "kit": "",
+      "hawk": ""
+    }
   }
 }

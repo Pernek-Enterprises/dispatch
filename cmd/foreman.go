@@ -13,6 +13,7 @@ import (
 	"github.com/Pernek-Enterprises/dispatch/internal/llm"
 	"github.com/Pernek-Enterprises/dispatch/internal/log"
 	"github.com/Pernek-Enterprises/dispatch/internal/pipe"
+	"github.com/Pernek-Enterprises/dispatch/internal/sessions"
 	"github.com/Pernek-Enterprises/dispatch/internal/state"
 	"github.com/Pernek-Enterprises/dispatch/internal/workflows"
 )
@@ -189,6 +190,8 @@ func advanceWorkflow(cfg *config.Config, st *state.State, completedJob *jobs.Job
 		if ts, ok := st.Tasks[completedJob.Task]; ok {
 			ts.Status = "complete"
 		}
+		// Clean up sessions for completed task
+		sessions.CleanupTask(completedJob.Task)
 		return
 	}
 
@@ -332,8 +335,8 @@ func dispatchPending(cfg *config.Config, st *state.State) {
 			jobs.Move(job.ID, "pending", "active")
 			st.Save()
 
-			// TODO: spawn OpenClaw session
-			log.Info("Job %s active — agent %s should pick it up", job.ID, job.Agent)
+			// Spawn or reuse OpenClaw session
+			dispatchToSession(cfg, job)
 			return // one work job at a time
 		}
 	}
@@ -367,6 +370,33 @@ func healthCheck(cfg *config.Config, st *state.State) {
 			jobs.WriteResult(job.ID, "active", fmt.Sprintf("TIMEOUT: exceeded %ds deadline", job.Timeout))
 			jobs.Move(job.ID, "active", "failed")
 		}
+	}
+}
+
+func dispatchToSession(cfg *config.Config, job jobs.Job) {
+	// Check for existing session for this task+agent
+	existing := sessions.Get(job.Task, job.Agent)
+
+	if existing != nil {
+		// Reuse existing session — send the new prompt
+		log.Info("Reusing session %s for %s/%s", existing.SessionKey, job.Task, job.Agent)
+		err := sessions.Send(&cfg.OpenClaw, existing, job.Prompt)
+		if err != nil {
+			log.Error("Failed to send to session %s: %v — spawning new", existing.SessionKey, err)
+			sessions.Destroy(job.Task, job.Agent)
+			existing = nil
+		}
+	}
+
+	if existing == nil {
+		// Spawn new session
+		session, err := sessions.Spawn(&cfg.OpenClaw, job.Task, job.Agent, job.Model, job.Prompt)
+		if err != nil {
+			log.Error("Failed to spawn session for %s/%s: %v", job.Task, job.Agent, err)
+			// Don't fail the job — it stays in active, will retry on next poll
+			return
+		}
+		log.Info("Spawned session %s for %s/%s (model=%s)", session.SessionKey, job.Task, job.Agent, job.Model)
 	}
 }
 
