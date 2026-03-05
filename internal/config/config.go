@@ -32,13 +32,17 @@ type NotificationConfig struct {
 }
 
 type OpenClawConfig struct {
-	Binary         string            `json:"binary"`
-	WorkspaceDir   string            `json:"workspaceDir"`
-	GatewayURL     string            `json:"gatewayUrl"`
-	GatewayToken   string            `json:"gatewayToken"`
-	AgentIDs       map[string]string `json:"agentIds"`
-	SessionTimeout int               `json:"sessionTimeout"`
-	SpawnMethod    string            `json:"spawnMethod"`
+	Binary         string                      `json:"binary"`
+	GatewayURL     string                      `json:"gatewayUrl"`
+	GatewayToken   string                      `json:"gatewayToken"`
+	SessionTimeout int                         `json:"sessionTimeout"`
+	SpawnMethod    string                      `json:"spawnMethod"`
+	Agents         map[string]OpenClawAgentCfg `json:"agents"`
+}
+
+type OpenClawAgentCfg struct {
+	ID           string `json:"id"`
+	WorkspaceDir string `json:"workspaceDir"`
 }
 
 type Model struct {
