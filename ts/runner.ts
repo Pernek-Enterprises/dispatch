@@ -93,6 +93,8 @@ async function runSession(
   let doneSignalled = false;
   let loopAborted = false;
   const recentCalls: string[] = [];
+  // Forward ref — set after createAgentSession so tools can abort the session
+  let abortFn: (() => Promise<void>) | undefined;
 
   // ─── Wrapped edit tool ───────────────────────────────────────────────────
   // Replace built-in edit tool: normalize "identical content" errors to success.
@@ -128,9 +130,14 @@ async function runSession(
     description: "Call this when ALL your work is complete. Provide a summary.",
     parameters: DoneSchema,
     execute: async (_id, params, _signal, _onUpdate, _ctx) => {
+      if (doneSignalled) return { content: [{ type: "text" as const, text: "Already acknowledged." }], details: {} };
       doneSignalled = true;
       log.info(`task_done: job ${job.id} — ${params.summary}`);
-      setImmediate(() => callbacks.onDone(job.id, params.summary).catch((e) => log.error(`onDone: ${e}`)));
+      const summary = params.summary;
+      setImmediate(() => {
+        callbacks.onDone(job.id, summary).catch((e) => log.error(`onDone: ${e}`));
+        abortFn?.().catch(() => {}); // abort session so model stops generating
+      });
       return { content: [{ type: "text" as const, text: "Acknowledged. Work complete." }], details: {} };
     },
   };
@@ -155,9 +162,14 @@ async function runSession(
     description: "Call this if you cannot complete the task. Explain what went wrong.",
     parameters: FailSchema,
     execute: async (_id, params, _signal, _onUpdate, _ctx) => {
+      if (doneSignalled) return { content: [{ type: "text" as const, text: "Already acknowledged." }], details: {} };
       log.error(`task_fail: job ${job.id} — ${params.reason}`);
-      doneSignalled = true; // prevent "no signal" fallback
-      setImmediate(() => callbacks.onFail(job.id, params.reason).catch((e) => log.error(`onFail: ${e}`)));
+      doneSignalled = true;
+      const reason = params.reason;
+      setImmediate(() => {
+        callbacks.onFail(job.id, reason).catch((e) => log.error(`onFail: ${e}`));
+        abortFn?.().catch(() => {});
+      });
       return { content: [{ type: "text" as const, text: "Failure recorded." }], details: {} };
     },
   };
@@ -189,6 +201,7 @@ async function runSession(
   });
 
   activeSessions.set(job.id, { abort: () => session.abort() });
+  abortFn = () => session.abort(); // wire up for task_done/task_fail
 
   // ─── Loop detection ───────────────────────────────────────────────────────
   session.subscribe((event) => {

@@ -81,7 +81,8 @@ export function resolveModel(cfg: Config, modelStr: string): ModelConfig {
   const mc = cfg.models[providerKey];
   if (!mc) throw new Error(`Unknown model provider: ${providerKey} (from "${modelStr}")`);
 
-  return modelId ? { ...mc, model: modelId } : mc;
+  // Use the registry key (e.g. "local-27b") as provider — Pi SDK looks up by that key
+  return { ...mc, provider: providerKey, model: modelId ?? mc.model };
 }
 
 export function ensureDirs(): void {
