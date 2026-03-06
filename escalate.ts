@@ -48,6 +48,19 @@ export function notifyFailure(cfg: Config, jobId: string, taskId: string, reason
   notify(cfg, jobId, taskId, body);
 }
 
+export function notifyDeliverableRetry(cfg: Config, jobId: string, taskId: string, step: string, missing: string[], attempt: number, maxAttempts: number): void {
+  const body = [
+    `⚠️ **Dispatch** — **Task:** ${taskId} | **Step:** ${step}`,
+    ``,
+    `🔄 **Deliverable retry ${attempt}/${maxAttempts}** — agent didn't produce all required files.`,
+    ``,
+    `Missing: ${missing.map(f => `\`${f}\``).join(", ")}`,
+    ``,
+    `Re-dispatching automatically...`,
+  ].join("\n");
+  notify(cfg, jobId, taskId, body);
+}
+
 export function notifyMaxIterations(cfg: Config, taskId: string, step: string, maxIter: number): void {
   const body = `🚨 **Dispatch** — **Task:** ${taskId}\n\n🔁 **Review loop exhausted** — step \`${step}\` hit max iterations (${maxIter}).\nNeeds human decision to continue or close.`;
   notify(cfg, "", taskId, body);

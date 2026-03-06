@@ -19,10 +19,11 @@ export interface TaskState {
 export interface AppState {
   models: Record<string, ModelLock>;
   tasks: Record<string, TaskState>;
+  deliverableRetries: Record<string, number>; // key: "<taskId>:<step>", value: retry count
 }
 
 export class State {
-  private data: AppState = { models: {}, tasks: {} };
+  private data: AppState = { models: {}, tasks: {}, deliverableRetries: {} };
 
   static load(): State {
     const s = new State();
@@ -32,6 +33,7 @@ export class State {
         const raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<AppState>;
         s.data.models = raw.models ?? {};
         s.data.tasks = raw.tasks ?? {};
+        s.data.deliverableRetries = raw.deliverableRetries ?? {};
       } catch { /* start fresh */ }
     }
     return s;
@@ -64,5 +66,20 @@ export class State {
 
   get tasks(): Record<string, TaskState> {
     return this.data.tasks;
+  }
+
+  getDeliverableRetries(taskId: string, step: string): number {
+    return this.data.deliverableRetries[`${taskId}:${step}`] ?? 0;
+  }
+
+  incrementDeliverableRetries(taskId: string, step: string): number {
+    const key = `${taskId}:${step}`;
+    const next = (this.data.deliverableRetries[key] ?? 0) + 1;
+    this.data.deliverableRetries[key] = next;
+    return next;
+  }
+
+  clearDeliverableRetries(taskId: string, step: string): void {
+    delete this.data.deliverableRetries[`${taskId}:${step}`];
   }
 }
