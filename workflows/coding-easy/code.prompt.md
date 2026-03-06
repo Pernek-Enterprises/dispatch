@@ -1,5 +1,3 @@
-Implement the spec. Create a branch (`agent/<task-id>-<slug>`).
+Implement the spec. Write clean code.
 
-Write clean code, commit with clear messages, push.
-
-Output a `diff.patch` artifact when done.
+When done, run `dispatch done "Implemented the spec"`.

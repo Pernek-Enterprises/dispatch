@@ -45,18 +45,11 @@ func Run(opts RunOpts) error {
 		"--model", opts.Model,
 	}
 
-	// System prompt
+	// System prompt: append to Pi's built-in prompt, never replace it
+	// Dispatch skill loaded automatically by Pi from ~/.pi/agent/skills/dispatch/
 	if opts.SystemPrompt != "" {
-		args = append(args, "--system-prompt", opts.SystemPrompt)
+		args = append(args, "--append-system-prompt", opts.SystemPrompt)
 	}
-
-	// Load dispatch skill (teaches Pi how to use done/ask/fail)
-	skillDir := filepath.Join(config.Root, "skill")
-	args = append(args, "--skill", skillDir)
-
-	// Append job-specific values so the skill's placeholders become concrete
-	jobContext := fmt.Sprintf("\n## Your Job\n\nJOB_ID: %s\nDISPATCH_ROOT: %s\nTASK_ID: %s", opts.JobID, config.Root, opts.TaskID)
-	args = append(args, "--append-system-prompt", jobContext)
 
 	// Tools
 	tools := opts.Tools
