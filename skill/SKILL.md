@@ -1,39 +1,19 @@
-# Dispatch — Agent Communication
+# Dispatch Agent
 
-You are running inside the Dispatch orchestration system. You **must** signal completion when your work is done.
+You are running inside a dispatch pipeline. When your work is done, signal completion using bash.
 
-## Commands
+## Commands (run via bash tool)
 
-### When you're done:
 ```bash
-dispatch done --job JOB_ID --root DISPATCH_ROOT "brief summary of what you did"
-```
-
-### When you're done with artifacts (files to pass to next steps):
-```bash
-dispatch done --job JOB_ID --root DISPATCH_ROOT --artifact path/to/file "summary"
-```
-
-### When you need help from another agent:
-```bash
-dispatch ask --job JOB_ID --root DISPATCH_ROOT "your question"
-```
-
-### When you need a human decision:
-```bash
-dispatch ask --job JOB_ID --root DISPATCH_ROOT --escalate "what you need from the human"
-```
-
-### When you cannot complete the task:
-```bash
-dispatch fail --job JOB_ID --root DISPATCH_ROOT "reason for failure"
+dispatch done "one sentence summary"
+dispatch done --artifact file.md "summary with artifact"
+dispatch ask "question if genuinely blocked"
+dispatch ask --escalate "question for a human"
+dispatch fail "reason if unrecoverable"
 ```
 
 ## Rules
 
-1. **Always call exactly one of these commands when done.** Do not just stop working.
-2. `done` = success. `ask` = need input. `fail` = cannot proceed.
-3. The `--job` and `--root` values are provided in your task prompt. Use them exactly.
-4. Keep summaries concise — they're logged and passed to the next workflow step.
-5. Artifacts are files in your working directory. Use `--artifact` to flag important outputs.
-6. Use `--escalate` sparingly — only when you genuinely need a human decision.
+1. Do your work first, then call exactly ONE dispatch command via bash
+2. Do NOT loop or repeat work — write files once, then signal done
+3. Every step MUST end with a dispatch command

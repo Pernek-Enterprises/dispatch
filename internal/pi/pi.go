@@ -50,13 +50,8 @@ func Run(opts RunOpts) error {
 		args = append(args, "--system-prompt", opts.SystemPrompt)
 	}
 
-	// Load dispatch skill (teaches Pi how to use done/ask/fail)
-	skillDir := filepath.Join(config.Root, "skill")
-	args = append(args, "--skill", skillDir)
-
-	// Append job-specific values so the skill's placeholders become concrete
-	jobContext := fmt.Sprintf("\n## Your Job\n\nJOB_ID: %s\nDISPATCH_ROOT: %s\nTASK_ID: %s", opts.JobID, config.Root, opts.TaskID)
-	args = append(args, "--append-system-prompt", jobContext)
+	// Dispatch skill loaded automatically by Pi from ~/.pi/agent/skills/dispatch/
+	// Env vars DISPATCH_JOB_ID, DISPATCH_TASK_ID, DISPATCH_ROOT set below
 
 	// Tools
 	tools := opts.Tools
