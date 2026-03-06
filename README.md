@@ -30,8 +30,8 @@ make build
 # Or configure manually
 cp config.json.example config.json
 cp models.json.example models.json
-cp prompts/coder.md.example prompts/coder.md
-cp prompts/reviewer.md.example prompts/reviewer.md
+cp agents/coder.md.example agents/coder.md
+cp agents/reviewer.md.example agents/reviewer.md
 
 # Start the foreman
 ./dispatch foreman
@@ -148,14 +148,14 @@ workflows/coding-easy/code.prompt.md
 workflows/coding-easy/review.prompt.md
 ```
 
-### Role Prompts — `prompts/<role>.md`
+### Role Prompts — `agents/<role>.md`
 
 Roles give agents personality. A `coder` is creative, a `reviewer` is adversarial:
 
 ```
-prompts/system.md      ← shared across all roles
-prompts/coder.md       ← coder identity
-prompts/reviewer.md    ← reviewer identity
+agents/system.md      ← shared across all roles
+agents/coder.md       ← coder identity
+agents/reviewer.md    ← reviewer identity
 ```
 
 ### Pi Skill — `skill/SKILL.md`
@@ -171,7 +171,7 @@ Teaches Pi agents how to use `dispatch done/ask/fail`. Loaded automatically on e
 ├── models.json           ← model endpoints
 ├── state.json            ← model locks, task progress
 ├── skill/SKILL.md        ← Pi skill (dispatch commands)
-├── prompts/              ← role identities
+├── agents/              ← role identities
 ├── workflows/            ← workflow definitions + prompts
 ├── jobs/
 │   ├── pending/          ← queued

@@ -76,7 +76,7 @@ Task created
   → Model free → spawn Pi process with:
       --model local-9b/Qwen3.5-9B
       --skill skill/          (dispatch commands)
-      --system-prompt prompts/coder.md
+      --system-prompt agents/coder.md
       --print --no-session    (ephemeral)
   → Pi does work using read/write/edit/bash tools
   → Pi runs: dispatch done --job <id> "summary"
@@ -250,11 +250,11 @@ Agents learn dispatch commands via `skill/SKILL.md` — a Pi skill loaded on eve
 
 Roles replace agents. A role defines the personality and approach — not a persistent entity.
 
-### Role prompts: `prompts/<role>.md`
+### Role prompts: `agents/<role>.md`
 
-**prompts/coder.md** — creative problem solver, writes clean code, tests thoroughly.
-**prompts/reviewer.md** — adversarial reviewer, checks edge cases, gives clear ACCEPTED/DENIED verdicts.
-**prompts/system.md** — shared system prompt loaded for all roles.
+**agents/coder.md** — creative problem solver, writes clean code, tests thoroughly.
+**agents/reviewer.md** — adversarial reviewer, checks edge cases, gives clear ACCEPTED/DENIED verdicts.
+**agents/system.md** — shared system prompt loaded for all roles.
 
 Prompt loading: `system.md` + `<role>.md` → Pi's `--system-prompt`.
 
@@ -378,7 +378,7 @@ All config files have `.example` templates. Local files are gitignored.
 ├── state.json              ← locks, tasks
 ├── skill/
 │   └── SKILL.md            ← Pi skill (dispatch commands)
-├── prompts/
+├── agents/
 │   ├── system.md           ← shared system prompt
 │   ├── coder.md            ← coder role identity
 │   └── reviewer.md         ← reviewer role identity
@@ -416,7 +416,7 @@ All config files have `.example` templates. Local files are gitignored.
 - [x] Artifact system — `artifacts/<task-id>/`
 - [x] Pi execution — `--print --no-session --skill` invocation
 - [x] Pi skill — `skill/SKILL.md` teaches agents dispatch commands
-- [x] Role prompts — `prompts/coder.md`, `prompts/reviewer.md`
+- [x] Role prompts — `agents/coder.md`, `agents/reviewer.md`
 - [x] Escalation — OpenClaw delivery to Discord/Telegram
 - [x] Answer flow — `dispatch answer` unblocks waiting jobs
 - [x] Task CLI — `dispatch task create|list|show`
