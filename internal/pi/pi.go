@@ -45,13 +45,11 @@ func Run(opts RunOpts) error {
 		"--model", opts.Model,
 	}
 
-	// System prompt
+	// Append to Pi's built-in system prompt — never replace it.
+	// --system-prompt would nuke Pi's agentic behavior (tool use, stop conditions).
 	if opts.SystemPrompt != "" {
-		args = append(args, "--system-prompt", opts.SystemPrompt)
+		args = append(args, "--append-system-prompt", opts.SystemPrompt)
 	}
-
-	// Dispatch skill loaded automatically by Pi from ~/.pi/agent/skills/dispatch/
-	// Env vars DISPATCH_JOB_ID, DISPATCH_TASK_ID, DISPATCH_ROOT set below
 
 	// Tools
 	tools := opts.Tools
