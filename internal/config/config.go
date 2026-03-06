@@ -28,8 +28,9 @@ type Config struct {
 }
 
 type NotificationConfig struct {
-	Escalation string `json:"escalation"`
-	Channel    string `json:"channel"`
+	Escalation string `json:"escalation"` // channel: discord, telegram, etc.
+	Target     string `json:"target"`     // reply-to target: #channel, +phone, etc.
+	Channel    string `json:"channel"`    // deprecated alias for target
 }
 
 type PiConfig struct {

@@ -14,6 +14,7 @@ import (
 	"github.com/Pernek-Enterprises/dispatch/internal/llm"
 	"github.com/Pernek-Enterprises/dispatch/internal/log"
 	"github.com/Pernek-Enterprises/dispatch/internal/pipe"
+	"github.com/Pernek-Enterprises/dispatch/internal/escalate"
 	"github.com/Pernek-Enterprises/dispatch/internal/pi"
 	"github.com/Pernek-Enterprises/dispatch/internal/state"
 	"github.com/Pernek-Enterprises/dispatch/internal/workflows"
@@ -101,6 +102,8 @@ func handleEvent(cfg *config.Config, st *state.State, msg pipe.Message) {
 		handleFail(cfg, st, msg)
 	case "ask":
 		handleAsk(cfg, st, msg)
+	case "answer":
+		handleAnswer(cfg, st, msg)
 	case "new_task":
 		log.Info("New task submitted: %s", msg.TaskID)
 		// dispatchPending will pick it up below
@@ -158,15 +161,19 @@ func handleFail(cfg *config.Config, st *state.State, msg pipe.Message) {
 	}
 
 	jobs.Move(msg.JobID, "active", "failed")
-	// TODO: escalation notification
+	escalate.NotifyFailure(cfg, msg.JobID, meta.Task, msg.Reason)
 }
 
 func handleAsk(cfg *config.Config, st *state.State, msg pipe.Message) {
 	log.Info("Question from %s: %s", msg.JobID, msg.Question)
 
 	if msg.Escalate {
-		// TODO: send to Stefan via Telegram
-		log.Info("Escalated to human: %s", msg.Question)
+		log.Info("Escalating to human: %s", msg.Question)
+		taskID := msg.TaskID
+		if meta := jobs.GetMeta(msg.JobID, "active"); meta != nil {
+			taskID = meta.Task
+		}
+		escalate.Notify(cfg, msg.JobID, taskID, msg.Question)
 		return
 	}
 
@@ -186,6 +193,23 @@ func handleAsk(cfg *config.Config, st *state.State, msg pipe.Message) {
 		Timeout:  60,
 		Prompt:   fmt.Sprintf("An agent has a question:\n\n%s\n\nProvide a clear, actionable answer.", msg.Question),
 	})
+}
+
+func handleAnswer(cfg *config.Config, st *state.State, msg pipe.Message) {
+	log.Info("Answer received for %s: %s", msg.JobID, msg.Message)
+
+	meta := jobs.GetMeta(msg.JobID, "active")
+	if meta == nil {
+		log.Warn("Job %s not found in active/ — cannot deliver answer", msg.JobID)
+		return
+	}
+
+	// Re-dispatch the original job with the answer appended to the prompt
+	answer := fmt.Sprintf("\n\n---\n\n**Human answered your question:**\n\n%s\n\nContinue with your work.", msg.Message)
+	meta.Prompt = meta.Prompt + answer
+
+	jobs.WriteMeta(msg.JobID, "active", meta)
+	dispatchToPi(cfg, *meta)
 }
 
 func advanceWorkflow(cfg *config.Config, st *state.State, completedJob *jobs.Job, result string) {
@@ -237,7 +261,7 @@ func advanceWorkflow(cfg *config.Config, st *state.State, completedJob *jobs.Job
 
 	if stepIter > maxIter {
 		log.Warn("Max iterations (%d) for %s on task %s — escalating", maxIter, nextStepName, completedJob.Task)
-		// TODO: escalate to Stefan
+		escalate.NotifyMaxIterations(cfg, completedJob.Task, nextStepName, maxIter)
 		return
 	}
 
@@ -246,7 +270,7 @@ func advanceWorkflow(cfg *config.Config, st *state.State, completedJob *jobs.Job
 	ts.Iteration[nextStepName] = stepIter
 
 	// Build prompt: system prompt + step prompt + artifacts + communication
-	systemPrompt := loadSystemPrompt(nextStep.Agent)
+	systemPrompt := loadSystemPrompt(workflows.GetRole(nextStep))
 
 	artifactDir := filepath.Join(config.Root, "artifacts", completedJob.Task)
 	artifactNote := ""
