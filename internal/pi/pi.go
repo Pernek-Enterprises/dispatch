@@ -46,9 +46,13 @@ func Run(opts RunOpts) error {
 		args = append(args, "--system-prompt", opts.SystemPrompt)
 	}
 
-	// Append dispatch instructions to system prompt
-	dispatchInstructions := buildDispatchInstructions(opts.JobID, opts.TaskID)
-	args = append(args, "--append-system-prompt", dispatchInstructions)
+	// Load dispatch skill (teaches Pi how to use done/ask/fail)
+	skillDir := filepath.Join(config.Root, "skill")
+	args = append(args, "--skill", skillDir)
+
+	// Append job-specific values so the skill's placeholders become concrete
+	jobContext := fmt.Sprintf("\n## Your Job\n\nJOB_ID: %s\nDISPATCH_ROOT: %s\nTASK_ID: %s", opts.JobID, config.Root, opts.TaskID)
+	args = append(args, "--append-system-prompt", jobContext)
 
 	// Tools
 	tools := opts.Tools
@@ -111,31 +115,6 @@ func Run(opts RunOpts) error {
 	}()
 
 	return nil
-}
-
-// buildDispatchInstructions creates the text appended to the system prompt
-// telling the model how to signal completion.
-func buildDispatchInstructions(jobID, taskID string) string {
-	root := config.Root
-	return fmt.Sprintf(`
-## Dispatch Communication
-
-You are running inside the Dispatch orchestration system.
-When you finish your work, you MUST signal completion by running:
-
-dispatch done --job %s --root %s "brief summary of what you did"
-
-To attach artifacts:
-dispatch done --job %s --root %s --artifact path/to/file.md "summary"
-
-If you need help:
-dispatch ask --job %s --root %s "your question"
-
-If you cannot complete the task:
-dispatch fail --job %s --root %s "reason"
-
-You MUST call one of these commands when done. Do not just stop.`,
-		jobID, root, jobID, root, jobID, root, jobID, root)
 }
 
 // findPi locates the Pi binary.
