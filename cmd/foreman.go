@@ -280,7 +280,7 @@ func advanceWorkflow(cfg *config.Config, st *state.State, completedJob *jobs.Job
 		Task:      completedJob.Task,
 		Workflow:  completedJob.Workflow,
 		Step:      nextStepName,
-		Agent:     nextStep.Agent,
+		Agent:     workflows.GetRole(nextStep),
 		Model:     nextStep.Model,
 		Type:      jobType,
 		Priority:  "normal",
