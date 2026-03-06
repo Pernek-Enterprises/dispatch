@@ -491,9 +491,16 @@ export async function startForeman(): Promise<void> {
       log.info(`Shutting down (signal: ${sig})`);
       clearInterval(pollTimer);
       st.save();
+      // Unblock any pending open(FIFO, O_RDONLY) in the libuv threadpool.
+      // fs.createReadStream on a named FIFO causes Node's threadpool to call
+      // open(O_RDONLY) which blocks until a writer appears. process.exit() can't
+      // complete while a threadpool thread is blocked in a syscall. Opening the
+      // write end briefly (O_WRONLY|O_NONBLOCK) unblocks it immediately.
+      try {
+        const wfd = fs.openSync(cfg.pipePath, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
+        fs.closeSync(wfd);
+      } catch { /* no listener open yet — fine */ }
       try { fs.unlinkSync(cfg.pipePath); } catch {}
-      // Force exit after 500ms — pipe fd or open streams can block Node from exiting cleanly
-      setTimeout(() => process.exit(0), 500).unref();
       process.exit(0);
     });
   }
