@@ -1,8 +1,19 @@
 # Dispatch
 
-Local-first, file-based agent orchestration system.
+Local-first, file-based agent orchestration. Route tasks through coding workflows on local LLMs — no database, no cloud, no heavyweight runtime.
 
-Route tasks to local LLMs, manage model contention, coordinate agents — all through plain files. No database, no API server, no format contracts.
+## Architecture
+
+```
+Task → Foreman → Model Queue → Pi process → dispatch done → next step
+                                   │
+                              read/write/edit/bash
+```
+
+- **Dispatch foreman** — orchestration daemon. Workflows, model queues, state management.
+- **Pi** — lightweight coding agent. Ephemeral processes with 4 tools. Starts in milliseconds.
+- **llama-server** — local LLM inference via Vulkan.
+- **OpenClaw** — optional communication bridge for human escalation (Discord/Telegram).
 
 ## Quick Start
 
@@ -10,62 +21,100 @@ Route tasks to local LLMs, manage model contention, coordinate agents — all th
 git clone https://github.com/Pernek-Enterprises/dispatch.git
 cd dispatch
 
-# Build
+# Build (requires Go 1.21+)
 make build
 
-# Configure for your installation
+# Interactive setup — walks through all config
+./dispatch setup
+
+# Or configure manually
 cp config.json.example config.json
 cp models.json.example models.json
-cp agents.json.example agents.json
+cp prompts/coder.md.example prompts/coder.md
+cp prompts/reviewer.md.example prompts/reviewer.md
 
-# Edit each file for your setup:
-# - models.json: your LLM endpoints and provider names
-# - agents.json: your agents and their capabilities
-# - config.json: poll interval, pipe path, timeouts
-
-# Run the foreman
+# Start the foreman
 ./dispatch foreman
+
+# Create a task
+./dispatch task create "Fix the auth redirect bug" --workflow coding-easy
 ```
 
-## How it works
+## How It Works
+
+1. **Create a task** with a workflow (e.g. `coding-easy`)
+2. **Foreman creates the first job** (spec step, model: 27b)
+3. **Checks model queue** — is 27b free? If yes, spawn Pi
+4. **Pi does the work** — reads code, writes spec, commits
+5. **Pi signals done** — `dispatch done --job <id> "wrote the spec"`
+6. **Foreman advances** — creates next job (code step, model: 9b)
+7. **Repeat** until workflow reaches `ready` (human review)
+
+### Branching
+
+Review steps output `ACCEPTED` or `DENIED`. Foreman does a simple string check — no LLM interpretation:
 
 ```
-Task arrives → triage job (LLM) → work job (agent) → parse result (LLM) → done
+review result contains "ACCEPTED" → next step: ready
+review result contains "DENIED"  → next step: fix → loops back to review
 ```
 
-Everything goes through the job queue — including LLM calls for triage and parsing. The foreman is a deterministic loop that shuffles files and manages locks. Intelligence comes from LLM jobs, not from the scheduler.
+Max 3 review loops (configurable), then auto-escalates to human.
+
+### Escalation
+
+When an agent is stuck or a job fails, foreman notifies you:
+
+```
+Pi → dispatch ask --escalate "question"
+   → Foreman → OpenClaw → Discord/Telegram → You
+   → dispatch answer --job <id> "do X"
+   → Pi resumes
+```
+
+## CLI Commands
+
+```bash
+# Agent commands (used by Pi during work)
+dispatch done --job <id> --root ~/dispatch "summary"
+dispatch done --job <id> --root ~/dispatch --artifact file.md "summary"
+dispatch ask --job <id> --root ~/dispatch "question"
+dispatch ask --job <id> --root ~/dispatch --escalate "need human"
+dispatch fail --job <id> --root ~/dispatch "reason"
+
+# Human commands
+dispatch answer --job <id> --root ~/dispatch "answer"
+
+# Management
+dispatch task create "description" --workflow coding-easy
+dispatch task list
+dispatch task show <id>
+dispatch workflow list
+dispatch workflow show <name>
+dispatch workflow validate <name>
+dispatch workflow create <name>
+dispatch setup
+dispatch status
+dispatch foreman
+```
 
 ## Configuration
 
-All configuration lives in JSON files. Nothing is hardcoded.
+All config uses `.example` templates. Copy and customize for your installation.
 
-### `models.json` — Define your models
+### `models.json` — Model endpoints
 
 ```json
 {
   "9b": {
-    "name": "Qwen3.5-9B",
-    "provider": "local/qwen-9b",
+    "name": "Qwen3.5-9B-Q4_K_M.gguf",
+    "provider": "local-9b",
     "endpoint": "http://localhost:8081/v1"
   },
   "27b": {
-    "name": "Qwen3.5-27B",
-    "provider": "local/qwen-27b",
+    "name": "Qwen3.5-27B-Q4_K_M.gguf",
+    "provider": "local-27b",
     "endpoint": "http://localhost:8080/v1"
-  }
-}
-```
-
-- `provider`: passed to session backend when spawning agent sessions
-- `endpoint`: OpenAI-compatible API URL for direct LLM calls
-
-### `agents.json` — Define your agents
-
-```json
-{
-  "kit": {
-    "role": "coder",
-    "capabilities": ["spec", "code", "fix"]
   }
 }
 ```
@@ -77,56 +126,82 @@ All configuration lives in JSON files. Nothing is hardcoded.
   "pollIntervalMs": 30000,
   "pipePath": "/tmp/dispatch.pipe",
   "maxLoopIterations": 3,
-  "sessionBackend": "openclaw"
+  "notifications": {
+    "escalation": "discord",
+    "target": "#dispatch"
+  },
+  "pi": {
+    "binary": "pi",
+    "defaultTools": ["read", "bash", "edit", "write"]
+  }
 }
 ```
 
-## Agent CLI
+### Workflows — `workflows/<name>.json`
 
-Agents communicate with the foreman using 3 commands:
+Each workflow is a JSON step graph with per-step prompt templates:
 
-```bash
-dispatch done "summary of work"           # mark step complete
-dispatch done --artifact spec.md "done"   # complete with artifact
-dispatch ask "question for help"           # ask a question
-dispatch fail "reason it failed"           # report failure
 ```
+workflows/coding-easy.json          ← step graph
+workflows/coding-easy/spec.prompt.md  ← what the agent sees
+workflows/coding-easy/code.prompt.md
+workflows/coding-easy/review.prompt.md
+```
+
+### Role Prompts — `prompts/<role>.md`
+
+Roles give agents personality. A `coder` is creative, a `reviewer` is adversarial:
+
+```
+prompts/system.md      ← shared across all roles
+prompts/coder.md       ← coder identity
+prompts/reviewer.md    ← reviewer identity
+```
+
+### Pi Skill — `skill/SKILL.md`
+
+Teaches Pi agents how to use `dispatch done/ask/fail`. Loaded automatically on every invocation.
 
 ## File Structure
 
 ```
 ~/dispatch/
-├── dispatch            ← single binary (foreman + CLI)
-├── config.json         ← your settings
-├── models.json         ← your model endpoints
-├── agents.json         ← your agents
-├── workflows/
-│   ├── coding-easy.json       ← workflow definition
-│   └── coding-easy/
-│       ├── spec.prompt.md     ← per-step prompts
-│       ├── code.prompt.md
-│       └── review.prompt.md
+├── dispatch              ← Go binary (foreman + CLI)
+├── config.json           ← settings
+├── models.json           ← model endpoints
+├── state.json            ← model locks, task progress
+├── skill/SKILL.md        ← Pi skill (dispatch commands)
+├── prompts/              ← role identities
+├── workflows/            ← workflow definitions + prompts
 ├── jobs/
-│   ├── pending/        ← queued
-│   ├── active/         ← in progress
-│   ├── done/           ← completed
-│   └── failed/         ← errored
-├── artifacts/          ← outputs passed between steps
-└── logs/
+│   ├── pending/          ← queued
+│   ├── active/           ← in progress
+│   ├── done/             ← completed
+│   └── failed/           ← errored
+├── artifacts/<task-id>/  ← outputs passed between steps
+└── logs/                 ← foreman + Pi process logs
 ```
 
 ## Key Principles
 
-- **One file to change** for workflow updates
-- **Zero format contracts** between dispatch and agents
-- **No silent failures** — stuck jobs get detected
-- **Full visibility** — `ls jobs/` tells you everything
-- **Model-aware** — no two jobs fight for the same GPU
-- **Nothing hardcoded** — all config from JSON files
+- **Files are state** — `ls jobs/` tells you everything
+- **Deterministic foreman** — no LLM in the scheduler, just code
+- **Event-driven** — CLI notifies foreman via named pipe, instant reaction
+- **Model-aware** — one job per GPU, no contention
+- **Lightweight** — Pi processes start in milliseconds, exit when done
+- **Nothing hardcoded** — all config from `.example` templates
 
-## Status
+## Requirements
 
-Early development. See [SPEC.md](./SPEC.md) for the full PRD.
+- Go 1.21+ (build only)
+- [Pi](https://github.com/badlogic/pi-mono) coding agent
+- llama-server or any OpenAI-compatible endpoint
+- OpenClaw (optional, for escalation notifications)
+
+## Docs
+
+- [SPEC.md](./SPEC.md) — full architecture and design decisions
+- [AGENTS.md](./AGENTS.md) — codebase guide for AI agents
 
 ## License
 
