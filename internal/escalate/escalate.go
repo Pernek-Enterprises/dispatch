@@ -23,20 +23,19 @@ func Notify(cfg *config.Config, jobID, taskID, message string) error {
 		return nil
 	}
 
-	body := fmt.Sprintf("🚨 **Dispatch Escalation**\n\n**Task:** %s\n**Job:** %s\n\n%s", taskID, jobID, message)
+	body := fmt.Sprintf("🚨 **Dispatch** — **Task:** %s | **Job:** %s\n\n%s", taskID, jobID, message)
 
 	args := []string{
-		"agent",
+		"message", "send",
+		"--target", target,
 		"--message", body,
-		"--deliver",
-		"--channel", channel,
 	}
-	if target != "" {
-		args = append(args, "--to", target)
+	if channel != "" {
+		args = append(args, "--channel", channel)
 	}
 
 	binary := findOpenClaw()
-	log.Info("Escalating via %s → %s (target: %s)", binary, channel, target)
+	log.Info("Notifying via %s message send (target: %s)", binary, target)
 
 	cmd := exec.Command(binary, args...)
 	out, err := cmd.CombinedOutput()
