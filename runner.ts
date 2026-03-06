@@ -29,6 +29,7 @@ import {
 
 import { type Config, resolveModel } from "./config.js";
 import { type Job } from "./jobs.js";
+import { type Project, buildContextBlock } from "./project.js";
 import { log } from "./log.js";
 
 export type TaskDoneCallback = (jobId: string, summary: string) => Promise<void>;
@@ -43,8 +44,8 @@ export interface RunnerCallbacks {
 
 const activeSessions = new Map<string, { abort: () => Promise<void> }>();
 
-export function dispatchJob(cfg: Config, job: Job, systemPrompt: string, callbacks: RunnerCallbacks): void {
-  runSession(cfg, job, systemPrompt, callbacks, 0).catch((err) => {
+export function dispatchJob(cfg: Config, job: Job, systemPrompt: string, callbacks: RunnerCallbacks, project?: Project): void {
+  runSession(cfg, job, systemPrompt, callbacks, 0, project).catch((err) => {
     log.error(`Runner error for ${job.id}: ${err}`);
     callbacks.onFail(job.id, `Runner error: ${err}`).catch(() => {});
   });
@@ -77,13 +78,27 @@ async function runSession(
   job: Job,
   systemPrompt: string,
   callbacks: RunnerCallbacks,
-  recoveryAttempt: number
+  recoveryAttempt: number,
+  project?: Project,
 ): Promise<void> {
   const modelCfg = resolveModel(cfg, job.model ?? "local-9b");
 
   const dispatchRoot = process.env.DISPATCH_ROOT ?? path.join(os.homedir(), ".dispatch");
-  const cwd = path.join(dispatchRoot, "artifacts", job.task);
-  fs.mkdirSync(cwd, { recursive: true });
+  const artifactDir = path.join(dispatchRoot, "artifacts", job.task);
+  fs.mkdirSync(artifactDir, { recursive: true });
+
+  // CWD: use project workspace if set, else artifacts dir
+  const cwd = project?.workspace ?? artifactDir;
+  if (project?.workspace && !fs.existsSync(project.workspace)) {
+    log.warn(`Project workspace does not exist: ${project.workspace} — falling back to artifacts dir`);
+    // Don't fail hard — model may create files in artifacts, hooks will warn
+  }
+
+  // Build full prompt: prepend project context block if project is set
+  const basePrompt = job.prompt ?? "";
+  const fullPrompt = project
+    ? `${buildContextBlock(project, job.task)}\n\n---\n\n${basePrompt}`
+    : basePrompt;
 
   const agentDir = path.join(os.homedir(), ".pi", "agent");
   const authStorage = AuthStorage.create(path.join(agentDir, "auth.json"));
@@ -272,7 +287,7 @@ async function runSession(
 
   log.info(`Session start: ${job.model} / ${job.id}`);
   try {
-    await session.prompt(job.prompt ?? "");
+    await session.prompt(fullPrompt);
   } finally {
     activeSessions.delete(job.id);
     logStream.end();
@@ -282,15 +297,15 @@ async function runSession(
   if (loopAborted && !doneSignalled) {
     if (recoveryAttempt < MAX_LOOP_RECOVERIES) {
       log.warn(`Loop recovery attempt ${recoveryAttempt + 1}/${MAX_LOOP_RECOVERIES} for job ${job.id} (tool: ${loopToolName})`);
-      const recoveryPrompt = (job.prompt ?? "") +
+      const recoveryJob: Job = { ...job, prompt: (job.prompt ?? "") +
         `\n\n---\n\n` +
         `⚠️ **Recovery attempt ${recoveryAttempt + 1}/${MAX_LOOP_RECOVERIES}:** You were stuck calling \`${loopToolName}\` ` +
         `with the same parameters repeatedly. Stop and reassess what you have done so far.\n\n` +
         `- If your work is complete, call \`task_done\` now.\n` +
         `- If you are genuinely blocked, call \`task_ask\`.\n` +
-        `- Otherwise, try a **different** approach — do not repeat the same command.`;
-      const recoveryJob: Job = { ...job, prompt: recoveryPrompt };
-      await runSession(cfg, recoveryJob, systemPrompt, callbacks, recoveryAttempt + 1);
+        `- Otherwise, try a **different** approach — do not repeat the same command.`,
+      };
+      await runSession(cfg, recoveryJob, systemPrompt, callbacks, recoveryAttempt + 1, project);
       return;
     }
     log.warn(`Max loop recoveries (${MAX_LOOP_RECOVERIES}) exhausted for job ${job.id}`);
