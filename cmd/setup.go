@@ -53,7 +53,7 @@ func Setup() {
 	// Create directory structure
 	dirs := []string{
 		"jobs/pending", "jobs/active", "jobs/done", "jobs/failed",
-		"artifacts", "logs", "workflows", "sessions", "prompts",
+		"artifacts", "logs", "workflows", "prompts", "skill",
 	}
 	for _, d := range dirs {
 		os.MkdirAll(filepath.Join(root, d), 0755)
@@ -82,26 +82,24 @@ func Setup() {
 			maxLoop = 3
 		}
 
-		// OpenClaw
+		// Pi configuration
 		fmt.Println()
-		fmt.Println("  ── OpenClaw Integration ──")
-		fmt.Println()
-
-		openclawBin := ask("OpenClaw binary path", findBinary("openclaw"))
-
-		fmt.Println()
-		fmt.Println("  Configure agent mappings (dispatch name → OpenClaw agent ID).")
-		fmt.Println("  Enter agents one per line. Empty line to finish.")
+		fmt.Println("  ── Pi (Execution Agent) ──")
 		fmt.Println()
 
-		agents := make(map[string]map[string]string)
-		for {
-			name := ask("Agent name (e.g. kit)", "")
-			if name == "" {
-				break
-			}
-			id := ask(fmt.Sprintf("OpenClaw agent ID for '%s'", name), name)
-			agents[name] = map[string]string{"id": id}
+		piBin := ask("Pi binary path", findBinary("pi"))
+
+		// Escalation
+		fmt.Println()
+		fmt.Println("  ── Escalation (Human Notifications) ──")
+		fmt.Println("  When agents are stuck or jobs fail, dispatch notifies you")
+		fmt.Println("  via OpenClaw. Requires OpenClaw running on this machine.")
+		fmt.Println()
+
+		escalationChannel := ask("Escalation channel (discord/telegram/none)", "discord")
+		escalationTarget := ""
+		if escalationChannel != "none" && escalationChannel != "" {
+			escalationTarget = ask("Escalation target (e.g. #dispatch, +phone)", "")
 		}
 
 		cfg := map[string]interface{}{
@@ -115,12 +113,12 @@ func Setup() {
 				"answer": 60,
 			},
 			"notifications": map[string]string{
-				"escalation": "telegram",
-				"channel":    "",
+				"escalation": escalationChannel,
+				"target":     escalationTarget,
 			},
-			"openclaw": map[string]interface{}{
-				"binary": openclawBin,
-				"agents": agents,
+			"pi": map[string]interface{}{
+				"binary":       piBin,
+				"defaultTools": []string{"read", "bash", "edit", "write"},
 			},
 		}
 
@@ -136,8 +134,8 @@ func Setup() {
 	} else {
 		fmt.Println()
 		fmt.Println("  ── Models ──")
-		fmt.Println("  Configure LLM endpoints (for triage/parse/answer jobs).")
-		fmt.Println("  Enter models one per line. Empty line to finish.")
+		fmt.Println("  Configure your LLM endpoints. Each model gets its own queue.")
+		fmt.Println("  Enter models one per line. Empty name to finish.")
 		fmt.Println()
 
 		models := make(map[string]interface{})
@@ -146,9 +144,9 @@ func Setup() {
 			if id == "" {
 				break
 			}
-			name := ask("Model name", id)
+			name := ask("Model filename/name", id)
 			endpoint := ask("Endpoint URL (e.g. http://localhost:8081/v1)", "")
-			provider := ask("Provider string (optional, for OpenClaw)", "")
+			provider := ask("Pi provider name (matches ~/.pi/agent/models.json)", "")
 
 			m := map[string]string{
 				"name":     name,
@@ -164,46 +162,7 @@ func Setup() {
 			writeJSON(modelsPath, models)
 			fmt.Println("  ✓ models.json created")
 		} else {
-			// Copy example
 			copyExample(root, "models.json")
-		}
-	}
-
-	// ── Agents ──────────────────────────────────────────────────────
-
-	agentsPath := filepath.Join(root, "agents.json")
-	if _, err := os.Stat(agentsPath); err == nil {
-		fmt.Println("  ✓ agents.json already exists")
-	} else {
-		fmt.Println()
-		fmt.Println("  ── Agents ──")
-		fmt.Println("  Configure dispatch agents (role + capabilities).")
-		fmt.Println("  Enter agents one per line. Empty line to finish.")
-		fmt.Println()
-
-		agents := make(map[string]interface{})
-		for {
-			name := ask("Agent name (e.g. kit)", "")
-			if name == "" {
-				break
-			}
-			role := ask("Role", "coder")
-			capsStr := ask("Capabilities (comma-separated)", "code,test")
-			caps := strings.Split(capsStr, ",")
-			for i := range caps {
-				caps[i] = strings.TrimSpace(caps[i])
-			}
-			agents[name] = map[string]interface{}{
-				"role":         role,
-				"capabilities": caps,
-			}
-		}
-
-		if len(agents) > 0 {
-			writeJSON(agentsPath, agents)
-			fmt.Println("  ✓ agents.json created")
-		} else {
-			copyExample(root, "agents.json")
 		}
 	}
 
@@ -211,6 +170,10 @@ func Setup() {
 
 	promptsDir := filepath.Join(root, "prompts")
 	setupPrompts(promptsDir, root)
+
+	// ── Skill ───────────────────────────────────────────────────────
+
+	setupSkill(root)
 
 	// ── Workflows ───────────────────────────────────────────────────
 
@@ -222,7 +185,6 @@ func Setup() {
 	if _, err := os.Stat(statePath); err != nil {
 		writeJSON(statePath, map[string]interface{}{
 			"models": map[string]interface{}{},
-			"agents": map[string]interface{}{},
 			"tasks":  map[string]interface{}{},
 		})
 		fmt.Println("  ✓ state.json initialized")
@@ -234,29 +196,36 @@ func Setup() {
 	fmt.Println("  ── Verification ──")
 	fmt.Println()
 
-	// Check openclaw binary
+	// Check Pi binary
 	cfgData, _ := os.ReadFile(configPath)
 	var cfgMap map[string]interface{}
 	json.Unmarshal(cfgData, &cfgMap)
 
-	ocBin := "openclaw"
-	if oc, ok := cfgMap["openclaw"].(map[string]interface{}); ok {
-		if b, ok := oc["binary"].(string); ok {
-			ocBin = b
+	piBin := "pi"
+	if pi, ok := cfgMap["pi"].(map[string]interface{}); ok {
+		if b, ok := pi["binary"].(string); ok {
+			piBin = b
 		}
 	}
-	if _, err := exec.LookPath(ocBin); err == nil {
-		fmt.Printf("  ✓ %s found in PATH\n", ocBin)
+	if _, err := exec.LookPath(piBin); err == nil {
+		fmt.Printf("  ✓ Pi (%s) found in PATH\n", piBin)
 	} else {
-		fmt.Printf("  ⚠ %s not found in PATH\n", ocBin)
+		fmt.Printf("  ⚠ Pi (%s) not found in PATH — install: npm install -g @mariozechner/pi-coding-agent\n", piBin)
 	}
 
-	// Check dispatch binary
+	// Check OpenClaw (for escalation)
+	if _, err := exec.LookPath("openclaw"); err == nil {
+		fmt.Println("  ✓ openclaw found in PATH (escalation available)")
+	} else {
+		fmt.Println("  ⚠ openclaw not in PATH — escalation notifications won't work")
+	}
+
+	// Check dispatch binary in PATH
 	if _, err := exec.LookPath("dispatch"); err == nil {
 		fmt.Println("  ✓ dispatch found in PATH")
 	} else {
-		fmt.Println("  ⚠ dispatch not in PATH — agents won't be able to call dispatch done/ask/fail")
-		fmt.Println("    Fix: sudo cp dispatch /usr/local/bin/dispatch")
+		fmt.Println("  ⚠ dispatch not in PATH — Pi agents won't be able to call dispatch done/ask/fail")
+		fmt.Printf("    Fix: sudo cp %s/dispatch /usr/local/bin/dispatch\n", root)
 	}
 
 	// Check named pipe path
@@ -267,6 +236,16 @@ func Setup() {
 		} else {
 			fmt.Printf("  ⚠ Pipe directory missing: %s\n", dir)
 		}
+	}
+
+	// Check Pi models config
+	home, _ := os.UserHomeDir()
+	piModelsPath := filepath.Join(home, ".pi", "agent", "models.json")
+	if _, err := os.Stat(piModelsPath); err == nil {
+		fmt.Printf("  ✓ Pi models config exists: %s\n", piModelsPath)
+	} else {
+		fmt.Printf("  ⚠ Pi models config missing: %s\n", piModelsPath)
+		fmt.Println("    Create it with your local model endpoints so Pi can reach llama-server")
 	}
 
 	// Check model endpoints
@@ -286,60 +265,81 @@ func Setup() {
 		}
 	}
 
+	// Check skill
+	skillPath := filepath.Join(root, "skill", "SKILL.md")
+	if _, err := os.Stat(skillPath); err == nil {
+		fmt.Println("  ✓ skill/SKILL.md exists")
+	} else {
+		fmt.Println("  ⚠ skill/SKILL.md missing — Pi agents won't know dispatch commands")
+	}
+
 	fmt.Println()
 	fmt.Println("  ── Done! ──")
 	fmt.Println()
 	fmt.Println("  Start the foreman:")
-	fmt.Println("    dispatch foreman")
+	fmt.Println("    ./dispatch foreman")
 	fmt.Println()
 	fmt.Println("  Create a task:")
-	fmt.Printf("    dispatch task create \"Fix the auth bug\" --workflow coding-easy\n")
+	fmt.Printf("    ./dispatch task create \"Fix the auth bug\" --workflow coding-easy\n")
 	fmt.Println()
 }
 
 func setupPrompts(promptsDir, root string) {
 	os.MkdirAll(promptsDir, 0755)
 
-	systemPath := filepath.Join(promptsDir, "system.md")
-	if _, err := os.Stat(systemPath); err != nil {
-		// Check for .example
-		exPath := filepath.Join(root, "prompts", "system.md.example")
-		if data, err := os.ReadFile(exPath); err == nil {
-			os.WriteFile(systemPath, data, 0644)
-			fmt.Println("  ✓ prompts/system.md created from example")
-		} else {
-			fmt.Println("  ⚠ No prompts/system.md.example found — create prompts/system.md manually")
-		}
-	} else {
-		fmt.Println("  ✓ prompts/system.md exists")
-	}
-
-	// Check for agent-specific prompt examples
-	entries, _ := os.ReadDir(promptsDir)
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".md.example") {
-			base := strings.TrimSuffix(e.Name(), ".example")
-			target := filepath.Join(promptsDir, base)
-			if _, err := os.Stat(target); err != nil {
-				data, _ := os.ReadFile(filepath.Join(promptsDir, e.Name()))
+	// Copy all .example files to their real counterparts if missing
+	examples := []string{"system.md", "coder.md", "reviewer.md"}
+	for _, name := range examples {
+		target := filepath.Join(promptsDir, name)
+		if _, err := os.Stat(target); err != nil {
+			exPath := filepath.Join(promptsDir, name+".example")
+			if data, err := os.ReadFile(exPath); err == nil {
 				os.WriteFile(target, data, 0644)
-				fmt.Printf("  ✓ prompts/%s created from example\n", base)
+				fmt.Printf("  ✓ prompts/%s created from example\n", name)
+			} else {
+				fmt.Printf("  ⚠ prompts/%s.example not found — create prompts/%s manually\n", name, name)
 			}
+		} else {
+			fmt.Printf("  ✓ prompts/%s exists\n", name)
 		}
+	}
+}
+
+func setupSkill(root string) {
+	skillDir := filepath.Join(root, "skill")
+	os.MkdirAll(skillDir, 0755)
+
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if _, err := os.Stat(skillPath); err == nil {
+		fmt.Println("  ✓ skill/SKILL.md exists")
+	} else {
+		fmt.Println("  ⚠ skill/SKILL.md missing — should be in the repo. Re-clone or copy from GitHub.")
 	}
 }
 
 func setupWorkflows(root string) {
 	wfDir := filepath.Join(root, "workflows")
 
-	// Check if coding-easy exists
 	if _, err := os.Stat(filepath.Join(wfDir, "coding-easy.json")); err == nil {
 		fmt.Println("  ✓ workflows/coding-easy.json exists")
-		return
+	} else {
+		fmt.Println("  ⚠ workflows/coding-easy.json missing — should be in the repo")
 	}
 
-	// coding-easy.json is in the repo, should already be there
-	fmt.Println("  ✓ Workflows directory ready")
+	// Check prompt files
+	promptDir := filepath.Join(wfDir, "coding-easy")
+	prompts := []string{"spec.prompt.md", "code.prompt.md", "review.prompt.md", "fix.prompt.md", "ready.prompt.md"}
+	missing := 0
+	for _, p := range prompts {
+		if _, err := os.Stat(filepath.Join(promptDir, p)); err != nil {
+			missing++
+		}
+	}
+	if missing == 0 {
+		fmt.Println("  ✓ workflows/coding-easy/ prompts all present")
+	} else {
+		fmt.Printf("  ⚠ workflows/coding-easy/ missing %d prompt file(s)\n", missing)
+	}
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -368,7 +368,6 @@ func copyExample(root, name string) {
 }
 
 func checkEndpoint(endpoint string) bool {
-	// Quick check — try to hit /v1/models or just connect
 	client := &http.Client{Timeout: 3 * time.Second}
 	url := strings.TrimSuffix(endpoint, "/") + "/models"
 	resp, err := client.Get(url)

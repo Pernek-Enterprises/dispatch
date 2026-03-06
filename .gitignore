@@ -19,3 +19,4 @@ state.json
 # Local prompts (use .example files as templates)
 prompts/*.md
 !prompts/*.md.example
+dispatch-linux
