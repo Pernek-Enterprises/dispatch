@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Pernek-Enterprises/dispatch/internal/config"
 )
 
 type chatRequest struct {
@@ -32,22 +31,11 @@ type chatResponse struct {
 
 var client = &http.Client{Timeout: 5 * time.Minute}
 
-// Call sends a prompt to a model endpoint (resolved from models.json).
-func Call(modelID, prompt string, systemPrompt string) (string, error) {
-	models, err := config.LoadModels()
-	if err != nil {
-		return "", err
-	}
-	model, ok := models[modelID]
-	if !ok {
-		available := make([]string, 0, len(models))
-		for k := range models {
-			available = append(available, k)
-		}
-		return "", fmt.Errorf("unknown model %q (available: %v)", modelID, available)
-	}
-	if model.Endpoint == "" {
-		return "", fmt.Errorf("model %q has no endpoint configured", modelID)
+// Call sends a prompt directly to an endpoint URL.
+// Used for stateless LLM jobs (triage, parse, answer) — not for agent work.
+func Call(endpoint, prompt string, systemPrompt string) (string, error) {
+	if endpoint == "" {
+		return "", fmt.Errorf("no endpoint provided")
 	}
 
 	messages := []chatMessage{}
@@ -62,15 +50,15 @@ func Call(modelID, prompt string, systemPrompt string) (string, error) {
 		Temperature: 0.7,
 	})
 
-	resp, err := client.Post(model.Endpoint+"/chat/completions", "application/json", bytes.NewReader(body))
+	resp, err := client.Post(endpoint+"/chat/completions", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("model %s: %w", modelID, err)
+		return "", fmt.Errorf("llm call: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("model %s (%s) HTTP %d: %s", modelID, model.Endpoint, resp.StatusCode, string(b))
+		return "", fmt.Errorf("llm %s HTTP %d: %s", endpoint, resp.StatusCode, string(b))
 	}
 
 	var cr chatResponse
@@ -78,20 +66,7 @@ func Call(modelID, prompt string, systemPrompt string) (string, error) {
 		return "", err
 	}
 	if len(cr.Choices) == 0 {
-		return "", fmt.Errorf("model %s returned no choices", modelID)
+		return "", fmt.Errorf("llm returned no choices")
 	}
 	return cr.Choices[0].Message.Content, nil
-}
-
-// GetProvider returns the provider string for a model (used for session spawning).
-func GetProvider(modelID string) string {
-	models, err := config.LoadModels()
-	if err != nil {
-		return ""
-	}
-	m, ok := models[modelID]
-	if !ok {
-		return ""
-	}
-	return m.Provider
 }
