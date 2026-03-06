@@ -383,7 +383,7 @@ export async function startForeman(): Promise<void> {
   }).catch((e) => log.error(`Pipe listener error: ${e}`));
 
   // Poll loop
-  setInterval(() => {
+  const pollTimer = setInterval(() => {
     healthCheck(cfg);
     dispatchPending(cfg);
     st.save();
@@ -393,8 +393,11 @@ export async function startForeman(): Promise<void> {
   for (const sig of ["SIGINT", "SIGTERM"]) {
     process.on(sig, () => {
       log.info(`Shutting down (signal: ${sig})`);
+      clearInterval(pollTimer);
       st.save();
       try { fs.unlinkSync(cfg.pipePath); } catch {}
+      // Force exit after 500ms — pipe fd or open streams can block Node from exiting cleanly
+      setTimeout(() => process.exit(0), 500).unref();
       process.exit(0);
     });
   }
