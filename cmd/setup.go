@@ -59,7 +59,7 @@ func Setup() {
 	// Create directory structure
 	dirs := []string{
 		"jobs/pending", "jobs/active", "jobs/done", "jobs/failed",
-		"artifacts", "logs", "workflows", "prompts", "skill",
+		"artifacts", "logs", "workflows", "agents", "skill",
 	}
 	for _, d := range dirs {
 		os.MkdirAll(filepath.Join(root, d), 0755)
@@ -177,10 +177,10 @@ func Setup() {
 		}
 	}
 
-	// ── Prompts ─────────────────────────────────────────────────────
+	// ── Agents ─────────────────────────────────────────────────────
 
-	promptsDir := filepath.Join(root, "prompts")
-	setupPrompts(promptsDir, root)
+	agentsDir := filepath.Join(root, "agents")
+	setupAgents(agentsDir, root)
 
 	// ── Skill ───────────────────────────────────────────────────────
 
@@ -295,23 +295,23 @@ func Setup() {
 	fmt.Println()
 }
 
-func setupPrompts(promptsDir, root string) {
-	os.MkdirAll(promptsDir, 0755)
+func setupAgents(agentsDir, root string) {
+	os.MkdirAll(agentsDir, 0755)
 
 	// Copy all .example files to their real counterparts if missing
 	examples := []string{"system.md", "coder.md", "reviewer.md"}
 	for _, name := range examples {
-		target := filepath.Join(promptsDir, name)
+		target := filepath.Join(agentsDir, name)
 		if _, err := os.Stat(target); err != nil {
-			exPath := filepath.Join(promptsDir, name+".example")
+			exPath := filepath.Join(agentsDir, name+".example")
 			if data, err := os.ReadFile(exPath); err == nil {
 				os.WriteFile(target, data, 0644)
-				fmt.Printf("  ✓ prompts/%s created from example\n", name)
+				fmt.Printf("  ✓ agents/%s created from example\n", name)
 			} else {
-				fmt.Printf("  ⚠ prompts/%s.example not found — create prompts/%s manually\n", name, name)
+				fmt.Printf("  ⚠ agents/%s.example not found — create agents/%s manually\n", name, name)
 			}
 		} else {
-			fmt.Printf("  ✓ prompts/%s exists\n", name)
+			fmt.Printf("  ✓ agents/%s exists\n", name)
 		}
 	}
 }
@@ -416,13 +416,13 @@ func copyRepoAssets(repoDir, root string) {
 	copyDirRecursive(filepath.Join(repoDir, "workflows"), filepath.Join(root, "workflows"))
 
 	// Copy prompt .example files and create .md if missing
-	srcPrompts := filepath.Join(repoDir, "prompts")
-	dstPrompts := filepath.Join(root, "prompts")
-	entries, err := os.ReadDir(srcPrompts)
+	srcAgents := filepath.Join(repoDir, "agents")
+	dstAgents := filepath.Join(root, "agents")
+	entries, err := os.ReadDir(srcAgents)
 	if err == nil {
 		for _, e := range entries {
-			src := filepath.Join(srcPrompts, e.Name())
-			dst := filepath.Join(dstPrompts, e.Name())
+			src := filepath.Join(srcAgents, e.Name())
+			dst := filepath.Join(dstAgents, e.Name())
 
 			// Always copy .example files
 			if strings.HasSuffix(e.Name(), ".example") {
@@ -431,10 +431,10 @@ func copyRepoAssets(repoDir, root string) {
 
 				// Create the real file from example if missing
 				realName := strings.TrimSuffix(e.Name(), ".example")
-				realPath := filepath.Join(dstPrompts, realName)
+				realPath := filepath.Join(dstAgents, realName)
 				if _, err := os.Stat(realPath); err != nil {
 					os.WriteFile(realPath, data, 0644)
-					fmt.Printf("  ✓ prompts/%s created from example\n", realName)
+					fmt.Printf("  ✓ agents/%s created from example\n", realName)
 				}
 			}
 		}

@@ -560,9 +560,9 @@ When done: ` + "`dispatch done \"cleanup complete\"`"
 	return strings.TrimSpace(string(data))
 }
 
-// loadSystemPrompt loads prompts/system.md + prompts/<agent>.md (if exists).
+// loadSystemPrompt loads agents/system.md + agents/<agent>.md (if exists).
 func loadSystemPrompt(agentName string) string {
-	promptsDir := filepath.Join(config.Root, "prompts")
+	promptsDir := filepath.Join(config.Root, "agents")
 	var parts []string
 
 	// Shared system prompt
