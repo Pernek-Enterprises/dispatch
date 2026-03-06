@@ -343,8 +343,8 @@ func dispatchPending(cfg *config.Config, st *state.State) {
 		case "human":
 			log.Info("Human job: %s — waiting for action", job.ID)
 			jobs.Move(job.ID, "pending", "active")
-			// TODO: notification
 			st.Save()
+			escalate.NotifyReady(cfg, job.ID, job.Task)
 
 		case "work":
 			if job.Model != "" && !st.IsModelFree(job.Model) {

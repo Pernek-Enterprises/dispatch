@@ -32,7 +32,7 @@ func Notify(cfg *config.Config, jobID, taskID, message string) error {
 		"--channel", channel,
 	}
 	if target != "" {
-		args = append(args, "--reply-to", target)
+		args = append(args, "--to", target)
 	}
 
 	binary := findOpenClaw()
@@ -47,6 +47,12 @@ func Notify(cfg *config.Config, jobID, taskID, message string) error {
 
 	log.Info("Escalation delivered for job %s", jobID)
 	return nil
+}
+
+// NotifyReady sends a notification when a task reaches the human review step.
+func NotifyReady(cfg *config.Config, jobID, taskID string) error {
+	msg := fmt.Sprintf("✅ **Task ready for review**\n\nThe pipeline has completed and is waiting for your approval.\n\nRun `dispatch answer --job %s \"approved\"` to close it out.", jobID)
+	return Notify(cfg, jobID, taskID, msg)
 }
 
 // NotifyFailure sends a failure notification.
