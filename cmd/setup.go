@@ -110,7 +110,14 @@ func Setup() {
 		escalationChannel := ask("Escalation channel (discord/telegram/none)", "discord")
 		escalationTarget := ""
 		if escalationChannel != "none" && escalationChannel != "" {
-			escalationTarget = ask("Escalation target (e.g. #dispatch, +phone)", "")
+			fmt.Println()
+			if escalationChannel == "discord" {
+				fmt.Println("  Discord requires a channel ID, not a name.")
+				fmt.Println("  Find it: right-click the channel → Copy Channel ID (enable Developer Mode in Discord settings).")
+				escalationTarget = ask("Discord channel ID", "")
+			} else {
+				escalationTarget = ask("Escalation target (e.g. +15551234567 for Telegram)", "")
+			}
 		}
 
 		cfg := map[string]interface{}{
