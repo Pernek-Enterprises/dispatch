@@ -24,24 +24,12 @@ func Foreman() {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n  %v\n\n", err)
-		fmt.Fprintln(os.Stderr, "  To get started:")
-		fmt.Fprintln(os.Stderr, "    cp config.json.example config.json")
-		fmt.Fprintln(os.Stderr, "    cp models.json.example models.json")
-		fmt.Fprintln(os.Stderr, "    cp agents.json.example agents.json")
-		fmt.Fprintln(os.Stderr, "  Then edit each file for your installation.")
+		fmt.Fprintln(os.Stderr, "  Run: dispatch setup")
 		os.Exit(1)
 	}
 
 	config.EnsureDirs()
 	st := state.Load()
-
-	// Initialize model/agent locks from config
-	models, _ := config.LoadModels()
-	for id := range models {
-		if !st.IsModelFree(id) && st.Models[id] == nil {
-			st.Models[id] = &state.ModelLock{}
-		}
-	}
 	st.Save()
 
 	log.Info("Foreman starting (root=%s, poll=%dms)", config.Root, cfg.PollIntervalMs)
@@ -581,21 +569,15 @@ func loadSystemPrompt(agentName string) string {
 }
 
 func dispatchToPi(cfg *config.Config, job jobs.Job) {
-	// Resolve model → provider/model string
-	modelRef := job.Model
-	models, err := config.LoadModels()
-	if err == nil {
-		if m, ok := models[modelRef]; ok && m.Provider != "" {
-			modelRef = fmt.Sprintf("%s/%s", m.Provider, m.Name)
-		}
-	}
+	// Model string is passed directly to Pi (e.g. "local-27b/Qwen3.5-27B-Q4_K_M.gguf")
+	// Must match a provider/model in ~/.pi/agent/models.json
 
 	// Load role-based system prompt
 	role := job.Agent // backward compat: agent field = role
 	systemPrompt := loadSystemPrompt(role)
 
-	err = pi.Run(pi.RunOpts{
-		Model:        modelRef,
+	err := pi.Run(pi.RunOpts{
+		Model:        job.Model,
 		Prompt:       job.Prompt,
 		SystemPrompt: systemPrompt,
 		JobID:        job.ID,

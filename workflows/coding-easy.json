@@ -1,11 +1,12 @@
 {
   "name": "coding-easy",
   "description": "Simple coding tasks — bug fixes, small features, straightforward changes.",
+  "note": "Model values must match your ~/.pi/agent/models.json (provider/model-id format). Update these for your installation.",
   "firstStep": "spec",
   "steps": {
     "spec": {
       "role": "coder",
-      "model": "27b",
+      "model": "CHANGE-ME/your-large-model",
       "timeout": 600,
       "next": "code",
       "artifactsIn": [],
@@ -13,7 +14,7 @@
     },
     "code": {
       "role": "coder",
-      "model": "9b",
+      "model": "CHANGE-ME/your-small-model",
       "timeout": 1800,
       "next": "review",
       "artifactsIn": ["spec.md"],
@@ -21,7 +22,7 @@
     },
     "review": {
       "role": "reviewer",
-      "model": "9b",
+      "model": "CHANGE-ME/your-small-model",
       "timeout": 900,
       "branch": {
         "ACCEPTED": "ready",
@@ -33,7 +34,7 @@
     },
     "fix": {
       "role": "coder",
-      "model": "27b",
+      "model": "CHANGE-ME/your-large-model",
       "timeout": 1200,
       "next": "review",
       "artifactsIn": ["review.md", "spec.md"],

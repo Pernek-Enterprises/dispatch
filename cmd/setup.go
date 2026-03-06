@@ -137,46 +137,6 @@ func Setup() {
 		fmt.Println("  ✓ config.json created")
 	}
 
-	// ── Models ──────────────────────────────────────────────────────
-
-	modelsPath := filepath.Join(root, "models.json")
-	if _, err := os.Stat(modelsPath); err == nil {
-		fmt.Println("  ✓ models.json already exists")
-	} else {
-		fmt.Println()
-		fmt.Println("  ── Models ──")
-		fmt.Println("  Configure your LLM endpoints. Each model gets its own queue.")
-		fmt.Println("  Enter models one per line. Empty name to finish.")
-		fmt.Println()
-
-		models := make(map[string]interface{})
-		for {
-			id := ask("Model ID (e.g. 9b, 27b)", "")
-			if id == "" {
-				break
-			}
-			name := ask("Model filename/name", id)
-			endpoint := ask("Endpoint URL (e.g. http://localhost:8081/v1)", "")
-			provider := ask("Pi provider name (matches ~/.pi/agent/models.json)", "")
-
-			m := map[string]string{
-				"name":     name,
-				"endpoint": endpoint,
-			}
-			if provider != "" {
-				m["provider"] = provider
-			}
-			models[id] = m
-		}
-
-		if len(models) > 0 {
-			writeJSON(modelsPath, models)
-			fmt.Println("  ✓ models.json created")
-		} else {
-			copyExample(root, "models.json")
-		}
-	}
-
 	// ── Agents ─────────────────────────────────────────────────────
 
 	agentsDir := filepath.Join(root, "agents")
@@ -188,7 +148,7 @@ func Setup() {
 
 	// ── Workflows ───────────────────────────────────────────────────
 
-	setupWorkflows(root, confirm)
+	setupWorkflows(root, confirm, ask)
 
 	// ── State ───────────────────────────────────────────────────────
 
@@ -257,23 +217,6 @@ func Setup() {
 	} else {
 		fmt.Printf("  ⚠ Pi models config missing: %s\n", piModelsPath)
 		fmt.Println("    Create it with your local model endpoints so Pi can reach llama-server")
-	}
-
-	// Check model endpoints
-	modelsData, _ := os.ReadFile(modelsPath)
-	var modelsMap map[string]interface{}
-	json.Unmarshal(modelsData, &modelsMap)
-	for id, m := range modelsMap {
-		if mm, ok := m.(map[string]interface{}); ok {
-			if ep, ok := mm["endpoint"].(string); ok && ep != "" {
-				fmt.Printf("  … Checking model %s at %s — ", id, ep)
-				if checkEndpoint(ep) {
-					fmt.Println("✓ reachable")
-				} else {
-					fmt.Println("✗ unreachable")
-				}
-			}
-		}
 	}
 
 	// Check skill
@@ -351,7 +294,7 @@ func setupSkill(root string) {
 	}
 }
 
-func setupWorkflows(root string, confirm func(string) bool) {
+func setupWorkflows(root string, confirm func(string) bool, ask func(string, string) string) {
 	wfDir := filepath.Join(root, "workflows")
 
 	if _, err := os.Stat(filepath.Join(wfDir, "coding-easy.json")); err == nil {
@@ -361,9 +304,19 @@ func setupWorkflows(root string, confirm func(string) bool) {
 		fmt.Println("  No workflows found.")
 		fmt.Println("  The starter workflow (coding-easy) runs: spec → code → review → ready.")
 		if confirm("Install the coding-easy starter workflow?") {
-			// copyRepoAssets already handles this if repo detected
-			// But if no repo, we can't create it
-			fmt.Println("  ✓ Workflow will be copied from repo if detected")
+			fmt.Println()
+			fmt.Println("  Model names must match your Pi config (~/.pi/agent/models.json).")
+			fmt.Println("  Format: provider/model-id (e.g. local-27b/Qwen3.5-27B-Q4_K_M.gguf)")
+			fmt.Println("  Run 'pi --list-models' to see available models.")
+			fmt.Println()
+			largeModel := ask("Large model (for spec, fix steps)", "")
+			smallModel := ask("Small model (for code, review steps)", "")
+			if largeModel != "" && smallModel != "" {
+				createCodingEasyWorkflow(wfDir, largeModel, smallModel)
+				fmt.Println("  ✓ workflows/coding-easy.json created")
+			} else {
+				fmt.Println("  ⚠ Skipped — need both model names")
+			}
 		} else {
 			fmt.Println("  Skipped — create your own workflows in workflows/")
 			return
@@ -500,6 +453,43 @@ func copyDirRecursive(src, dst string) {
 			}
 		}
 	}
+}
+
+func createCodingEasyWorkflow(wfDir, largeModel, smallModel string) {
+	os.MkdirAll(wfDir, 0755)
+	wf := map[string]interface{}{
+		"name":        "coding-easy",
+		"description": "Simple coding tasks — bug fixes, small features, straightforward changes.",
+		"firstStep":   "spec",
+		"steps": map[string]interface{}{
+			"spec": map[string]interface{}{
+				"role": "coder", "model": largeModel, "timeout": 600,
+				"next": "code", "artifactsOut": []string{"spec.md"},
+			},
+			"code": map[string]interface{}{
+				"role": "coder", "model": smallModel, "timeout": 1800,
+				"next": "review", "artifactsIn": []string{"spec.md"}, "artifactsOut": []string{"diff.patch"},
+			},
+			"review": map[string]interface{}{
+				"role": "reviewer", "model": smallModel, "timeout": 900,
+				"branch": map[string]string{"ACCEPTED": "ready", "DENIED": "fix"},
+				"maxIterations": 3,
+				"artifactsIn":   []string{"spec.md", "diff.patch"}, "artifactsOut": []string{"review.md"},
+			},
+			"fix": map[string]interface{}{
+				"role": "coder", "model": largeModel, "timeout": 1200,
+				"next": "review", "artifactsIn": []string{"review.md", "spec.md"}, "artifactsOut": []string{"diff.patch"},
+			},
+			"ready": map[string]interface{}{
+				"type": "human", "timeout": 0,
+			},
+		},
+		"destroy": map[string]interface{}{
+			"timeout": 60,
+			"actions": []string{"archive_artifacts", "cleanup_jobs"},
+		},
+	}
+	writeJSON(filepath.Join(wfDir, "coding-easy.json"), wf)
 }
 
 func checkEndpoint(endpoint string) bool {

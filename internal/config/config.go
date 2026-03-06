@@ -80,21 +80,8 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-func LoadModels() (map[string]Model, error) {
-	models := make(map[string]Model)
-	if err := loadJSON("models.json", &models); err != nil {
-		return nil, err
-	}
-	return models, nil
-}
-
-func LoadAgents() (map[string]Agent, error) {
-	agents := make(map[string]Agent)
-	if err := loadJSON("agents.json", &agents); err != nil {
-		return nil, err
-	}
-	return agents, nil
-}
+// Models are referenced directly in workflows using Pi model strings.
+// No models.json needed — Pi resolves models via ~/.pi/agent/models.json.
 
 func loadJSON(name string, v interface{}) error {
 	p := filepath.Join(Root, name)
