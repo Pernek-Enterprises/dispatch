@@ -14,6 +14,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "setup":
+		cmd.Setup()
 	case "foreman":
 		cmd.Foreman()
 	case "done":
@@ -43,6 +45,7 @@ func printUsage() {
 	fmt.Println(`dispatch — local agent orchestration
 
 Commands:
+  dispatch setup                       Interactive setup wizard
   dispatch foreman                     Start the foreman daemon
   dispatch done "message"              Mark step as complete
   dispatch done --artifact file.md     Complete with artifact(s)
