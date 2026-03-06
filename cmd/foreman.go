@@ -293,7 +293,7 @@ func advanceWorkflow(cfg *config.Config, st *state.State, completedJob *jobs.Job
 		return
 	}
 
-	log.Info("Created job %s for step %s (agent=%s, model=%s)", id, nextStepName, nextStep.Agent, nextStep.Model)
+	log.Info("Created job %s for step %s (role=%s, model=%s)", id, nextStepName, workflows.GetRole(nextStep), nextStep.Model)
 }
 
 func dispatchPending(cfg *config.Config, st *state.State) {
