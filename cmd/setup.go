@@ -180,7 +180,7 @@ func Setup() {
 	// ── Agents ─────────────────────────────────────────────────────
 
 	agentsDir := filepath.Join(root, "agents")
-	setupAgents(agentsDir, root)
+	setupAgents(agentsDir, root, confirm)
 
 	// ── Skill ───────────────────────────────────────────────────────
 
@@ -188,7 +188,7 @@ func Setup() {
 
 	// ── Workflows ───────────────────────────────────────────────────
 
-	setupWorkflows(root)
+	setupWorkflows(root, confirm)
 
 	// ── State ───────────────────────────────────────────────────────
 
@@ -295,23 +295,46 @@ func Setup() {
 	fmt.Println()
 }
 
-func setupAgents(agentsDir, root string) {
+func setupAgents(agentsDir, root string, confirm func(string) bool) {
 	os.MkdirAll(agentsDir, 0755)
 
-	// Copy all .example files to their real counterparts if missing
-	examples := []string{"system.md", "coder.md", "reviewer.md"}
-	for _, name := range examples {
-		target := filepath.Join(agentsDir, name)
-		if _, err := os.Stat(target); err != nil {
-			exPath := filepath.Join(agentsDir, name+".example")
-			if data, err := os.ReadFile(exPath); err == nil {
-				os.WriteFile(target, data, 0644)
-				fmt.Printf("  ✓ agents/%s created from example\n", name)
-			} else {
-				fmt.Printf("  ⚠ agents/%s.example not found — create agents/%s manually\n", name, name)
+	// Always copy system.md from example (shared base prompt)
+	systemTarget := filepath.Join(agentsDir, "system.md")
+	if _, err := os.Stat(systemTarget); err != nil {
+		exPath := filepath.Join(agentsDir, "system.md.example")
+		if data, err := os.ReadFile(exPath); err == nil {
+			os.WriteFile(systemTarget, data, 0644)
+			fmt.Println("  ✓ agents/system.md created from example")
+		}
+	} else {
+		fmt.Println("  ✓ agents/system.md exists")
+	}
+
+	// Check for existing custom agents
+	hasAgents := false
+	entries, _ := os.ReadDir(agentsDir)
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") && e.Name() != "system.md" && !strings.HasSuffix(e.Name(), ".example") {
+			hasAgents = true
+			fmt.Printf("  ✓ agents/%s exists\n", e.Name())
+		}
+	}
+
+	if !hasAgents {
+		fmt.Println()
+		fmt.Println("  No agent identities found.")
+		fmt.Println("  The default agents are a generic coder and reviewer.")
+		fmt.Println("  You can customize or delete them later.")
+		if confirm("Create default coder + reviewer agents for quick start?") {
+			for _, name := range []string{"coder.md", "reviewer.md"} {
+				exPath := filepath.Join(agentsDir, name+".example")
+				if data, err := os.ReadFile(exPath); err == nil {
+					os.WriteFile(filepath.Join(agentsDir, name), data, 0644)
+					fmt.Printf("  ✓ agents/%s created\n", name)
+				}
 			}
 		} else {
-			fmt.Printf("  ✓ agents/%s exists\n", name)
+			fmt.Println("  Skipped — create your own agents in agents/*.md")
 		}
 	}
 }
@@ -328,13 +351,23 @@ func setupSkill(root string) {
 	}
 }
 
-func setupWorkflows(root string) {
+func setupWorkflows(root string, confirm func(string) bool) {
 	wfDir := filepath.Join(root, "workflows")
 
 	if _, err := os.Stat(filepath.Join(wfDir, "coding-easy.json")); err == nil {
 		fmt.Println("  ✓ workflows/coding-easy.json exists")
 	} else {
-		fmt.Println("  ⚠ workflows/coding-easy.json missing — should be in the repo")
+		fmt.Println()
+		fmt.Println("  No workflows found.")
+		fmt.Println("  The starter workflow (coding-easy) runs: spec → code → review → ready.")
+		if confirm("Install the coding-easy starter workflow?") {
+			// copyRepoAssets already handles this if repo detected
+			// But if no repo, we can't create it
+			fmt.Println("  ✓ Workflow will be copied from repo if detected")
+		} else {
+			fmt.Println("  Skipped — create your own workflows in workflows/")
+			return
+		}
 	}
 
 	// Check prompt files
@@ -415,27 +448,16 @@ func copyRepoAssets(repoDir, root string) {
 	// Copy workflows/
 	copyDirRecursive(filepath.Join(repoDir, "workflows"), filepath.Join(root, "workflows"))
 
-	// Copy prompt .example files and create .md if missing
+	// Copy .example files only — user creates actual agents during setup
 	srcAgents := filepath.Join(repoDir, "agents")
 	dstAgents := filepath.Join(root, "agents")
+	os.MkdirAll(dstAgents, 0755)
 	entries, err := os.ReadDir(srcAgents)
 	if err == nil {
 		for _, e := range entries {
-			src := filepath.Join(srcAgents, e.Name())
-			dst := filepath.Join(dstAgents, e.Name())
-
-			// Always copy .example files
 			if strings.HasSuffix(e.Name(), ".example") {
-				data, _ := os.ReadFile(src)
-				os.WriteFile(dst, data, 0644)
-
-				// Create the real file from example if missing
-				realName := strings.TrimSuffix(e.Name(), ".example")
-				realPath := filepath.Join(dstAgents, realName)
-				if _, err := os.Stat(realPath); err != nil {
-					os.WriteFile(realPath, data, 0644)
-					fmt.Printf("  ✓ agents/%s created from example\n", realName)
-				}
+				data, _ := os.ReadFile(filepath.Join(srcAgents, e.Name()))
+				os.WriteFile(filepath.Join(dstAgents, e.Name()), data, 0644)
 			}
 		}
 	}

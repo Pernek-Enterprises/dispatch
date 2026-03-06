@@ -586,7 +586,7 @@ func dispatchToPi(cfg *config.Config, job jobs.Job) {
 	models, err := config.LoadModels()
 	if err == nil {
 		if m, ok := models[modelRef]; ok && m.Provider != "" {
-			modelRef = fmt.Sprintf("%s/%s", modelRef, m.Name)
+			modelRef = fmt.Sprintf("%s/%s", m.Provider, m.Name)
 		}
 	}
 
