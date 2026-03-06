@@ -44,7 +44,7 @@ export interface RunnerCallbacks {
 const activeSessions = new Map<string, { abort: () => Promise<void> }>();
 
 export function dispatchJob(cfg: Config, job: Job, systemPrompt: string, callbacks: RunnerCallbacks): void {
-  runSession(cfg, job, systemPrompt, callbacks).catch((err) => {
+  runSession(cfg, job, systemPrompt, callbacks, 0).catch((err) => {
     log.error(`Runner error for ${job.id}: ${err}`);
     callbacks.onFail(job.id, `Runner error: ${err}`).catch(() => {});
   });
@@ -70,11 +70,14 @@ const FailSchema = Type.Object({
 
 // ─── Session runner ───────────────────────────────────────────────────────────
 
+const MAX_LOOP_RECOVERIES = 2;
+
 async function runSession(
   cfg: Config,
   job: Job,
   systemPrompt: string,
-  callbacks: RunnerCallbacks
+  callbacks: RunnerCallbacks,
+  recoveryAttempt: number
 ): Promise<void> {
   const modelCfg = resolveModel(cfg, job.model ?? "local-9b");
 
@@ -92,6 +95,7 @@ async function runSession(
 
   let doneSignalled = false;
   let loopAborted = false;
+  let loopToolName = "";
   const recentCalls: string[] = [];
   // Forward ref — set after createAgentSession so tools can abort the session
   let abortFn: (() => Promise<void>) | undefined;
@@ -249,11 +253,9 @@ async function runSession(
 
       if (recentCalls.length >= 5 && recentCalls.slice(-5).every((c) => c === sig)) {
         loopAborted = true;
-        log.warn(`Loop detected in job ${job.id}: ${e.toolName} repeated 5× identically`);
-        const reason = `Tool call loop: ${e.toolName} called with identical parameters 5 times`;
-        session.abort().then(() => {
-          callbacks.onFail(job.id, reason).catch(() => {});
-        }).catch(() => {});
+        loopToolName = e.toolName ?? "unknown";
+        log.warn(`Loop detected in job ${job.id}: ${loopToolName} repeated 5× identically`);
+        session.abort().catch(() => {}); // abort; recovery handled after prompt() returns
       }
     }
   });
@@ -275,6 +277,25 @@ async function runSession(
     activeSessions.delete(job.id);
     logStream.end();
     session.dispose();
+  }
+
+  if (loopAborted && !doneSignalled) {
+    if (recoveryAttempt < MAX_LOOP_RECOVERIES) {
+      log.warn(`Loop recovery attempt ${recoveryAttempt + 1}/${MAX_LOOP_RECOVERIES} for job ${job.id} (tool: ${loopToolName})`);
+      const recoveryPrompt = (job.prompt ?? "") +
+        `\n\n---\n\n` +
+        `⚠️ **Recovery attempt ${recoveryAttempt + 1}/${MAX_LOOP_RECOVERIES}:** You were stuck calling \`${loopToolName}\` ` +
+        `with the same parameters repeatedly. Stop and reassess what you have done so far.\n\n` +
+        `- If your work is complete, call \`task_done\` now.\n` +
+        `- If you are genuinely blocked, call \`task_ask\`.\n` +
+        `- Otherwise, try a **different** approach — do not repeat the same command.`;
+      const recoveryJob: Job = { ...job, prompt: recoveryPrompt };
+      await runSession(cfg, recoveryJob, systemPrompt, callbacks, recoveryAttempt + 1);
+      return;
+    }
+    log.warn(`Max loop recoveries (${MAX_LOOP_RECOVERIES}) exhausted for job ${job.id}`);
+    await callbacks.onFail(job.id, `Tool call loop on \`${loopToolName}\` — ${MAX_LOOP_RECOVERIES} recovery attempts failed`);
+    return;
   }
 
   if (!doneSignalled && !loopAborted) {
