@@ -123,6 +123,31 @@ async function runSession(
     },
   };
 
+  // ─── Wrapped bash tool ───────────────────────────────────────────────────
+  // The Pi SDK bash tool returns isError:true on non-zero exit codes, which
+  // causes the model to retry the same command in a loop. Wrap it to always
+  // return success (with exit code + output) so the model treats it as info.
+  const origBash = createBashTool(cwd) as unknown as AgentTool;
+  const wrappedBash: ToolDefinition = {
+    name: "bash",
+    label: "Bash",
+    description: (origBash as { description?: string }).description ?? "Run a bash command",
+    parameters: origBash.parameters,
+    execute: async (toolCallId, params, signal, onUpdate, _ctx) => {
+      try {
+        return await origBash.execute(toolCallId, params as Static<TSchema>, signal, onUpdate);
+      } catch (e) {
+        // Non-zero exit: return output as success so model doesn't retry
+        const msg = String(e);
+        log.info(`[bash] non-zero exit — returning as info (job ${job.id}): ${msg.slice(0, 80)}`);
+        return {
+          content: [{ type: "text" as const, text: msg }],
+          details: {},
+        };
+      }
+    },
+  };
+
   // ─── task_done ────────────────────────────────────────────────────────────
   const taskDoneTool: ToolDefinition<typeof DoneSchema> = {
     name: "task_done",
@@ -192,9 +217,9 @@ async function runSession(
     thinkingLevel: "off",
     authStorage,
     modelRegistry,
-    // Exclude edit from tools (replaced by wrappedEdit in customTools)
-    tools: [createReadTool(cwd), createWriteTool(cwd), createBashTool(cwd)],
-    customTools: [wrappedEdit, taskDoneTool as unknown as ToolDefinition, taskAskTool as unknown as ToolDefinition, taskFailTool as unknown as ToolDefinition],
+    // Exclude edit and bash from tools (replaced by wrapped versions in customTools)
+    tools: [createReadTool(cwd), createWriteTool(cwd)],
+    customTools: [wrappedEdit, wrappedBash, taskDoneTool as unknown as ToolDefinition, taskAskTool as unknown as ToolDefinition, taskFailTool as unknown as ToolDefinition],
     resourceLoader: loader,
     sessionManager: SessionManager.create(cwd, path.join(dispatchRoot, "sessions")),
     settingsManager: settingsMgr,
