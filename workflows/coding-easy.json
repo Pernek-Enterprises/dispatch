@@ -1,6 +1,6 @@
 {
   "name": "coding-easy",
-  "description": "Simple coding tasks — bug fixes, small features, straightforward changes.",
+  "description": "Simple coding tasks \u2014 bug fixes, small features, straightforward changes.",
   "note": "Model values must match your ~/.pi/agent/models.json (provider/model-id format). Update these for your installation.",
   "firstStep": "spec",
   "steps": {
@@ -10,15 +10,21 @@
       "timeout": 600,
       "next": "code",
       "artifactsIn": [],
-      "artifactsOut": ["spec.md"]
+      "artifactsOut": [
+        "spec.md"
+      ]
     },
     "code": {
       "role": "coder",
       "model": "CHANGE-ME/your-small-model",
       "timeout": 1800,
       "next": "review",
-      "artifactsIn": ["spec.md"],
-      "artifactsOut": ["diff.patch"]
+      "artifactsIn": [
+        "spec.md"
+      ],
+      "artifactsOut": [
+        "diff.patch"
+      ]
     },
     "review": {
       "role": "reviewer",
@@ -29,16 +35,26 @@
         "DENIED": "fix"
       },
       "maxIterations": 3,
-      "artifactsIn": ["spec.md", "diff.patch"],
-      "artifactsOut": ["review.md"]
+      "artifactsIn": [
+        "spec.md",
+        "diff.patch"
+      ],
+      "artifactsOut": [
+        "review.md"
+      ]
     },
     "fix": {
       "role": "coder",
       "model": "CHANGE-ME/your-large-model",
       "timeout": 1200,
       "next": "review",
-      "artifactsIn": ["review.md", "spec.md"],
-      "artifactsOut": ["diff.patch"]
+      "artifactsIn": [
+        "review.md",
+        "spec.md"
+      ],
+      "artifactsOut": [
+        "diff.patch"
+      ]
     },
     "ready": {
       "type": "human",
@@ -46,7 +62,10 @@
     }
   },
   "destroy": {
-    "timeout": 60,
-    "actions": ["archive_artifacts", "cleanup_jobs"]
+    "timeout": 300,
+    "actions": [
+      "archive_artifacts",
+      "cleanup_jobs"
+    ]
   }
 }

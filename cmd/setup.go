@@ -503,7 +503,7 @@ func createCodingEasyWorkflow(wfDir, largeModel, smallModel string) {
 			},
 		},
 		"destroy": map[string]interface{}{
-			"timeout": 60,
+			"timeout": 300,
 			"actions": []string{"archive_artifacts", "cleanup_jobs"},
 		},
 	}
