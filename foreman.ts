@@ -49,6 +49,13 @@ function advanceWorkflow(cfg: Config, st: State, completedJob: Job, result: stri
 
   const nextStepName = getNextStep(wf, completedJob.step, result);
   if (!nextStepName) {
+    const currentStep = wf.steps[completedJob.step];
+    // Branch step with no keyword match → escalate to human rather than silently going terminal
+    if (currentStep?.branch && Object.keys(currentStep.branch).length > 0) {
+      log.warn(`Task ${completedJob.task}: branch step '${completedJob.step}' result contained no routing keyword — escalating to human`);
+      notifyReady(cfg, completedJob.id, completedJob.task);
+      return;
+    }
     log.info(`Task ${completedJob.task} reached terminal step — starting destroy phase`);
     startDestroy(cfg, st, completedJob.task, wf);
     return;

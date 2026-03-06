@@ -74,7 +74,7 @@ export function getNextStep(wf: Workflow, currentStep: string, result: string): 
     for (const [keyword, target] of Object.entries(step.branch)) {
       if (upper.includes(keyword.toUpperCase())) return target;
     }
-    return null; // no keyword matched → terminal
+    return null; // no keyword matched
   }
 
   return step.next ?? null;
