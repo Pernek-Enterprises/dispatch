@@ -443,7 +443,7 @@ function dispatchJobFromMeta(cfg: Config, job: Job): void {
       notifyFailure(cfg, jobId, meta.task, reason);
       st.save();
     },
-  });
+  }, project);  // ← pass project so runner gets context block + workspace CWD
 }
 
 // Module-level state ref (set in startForeman)

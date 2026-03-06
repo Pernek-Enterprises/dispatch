@@ -89,6 +89,10 @@ async function runSession(
 
   // CWD: use project workspace if set, else artifacts dir
   const cwd = project?.workspace ?? artifactDir;
+  if (project?.workspace && !fs.existsSync(project.workspace)) {
+    log.warn(`Project workspace does not exist: ${project.workspace} — falling back to artifacts dir`);
+    // Don't fail hard — model may create files in artifacts, hooks will warn
+  }
 
   // Build full prompt: prepend project context block if project is set
   const basePrompt = job.prompt ?? "";

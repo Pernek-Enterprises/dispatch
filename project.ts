@@ -113,6 +113,13 @@ export function buildContextBlock(project: Project, taskId: string): string {
     lines.push(`Write your output files there, not in the current directory.`);
   }
 
+  // Surface PR review comments for fix step
+  const prCommentsPath = path.join(ROOT, "artifacts", taskId, ".pr_comments.md");
+  if (fs.existsSync(prCommentsPath)) {
+    const comments = fs.readFileSync(prCommentsPath, "utf8").trim();
+    lines.push("", comments);
+  }
+
   return lines.join("\n");
 }
 
@@ -209,9 +216,12 @@ const BUILTIN_HOOKS: Record<string, HookFn> = {
     ].join("\n");
 
     const bodyFile = path.join(ctx.artifactDir, ".pr_body.md");
+    const titleFile = path.join(ctx.artifactDir, ".pr_title.md");
     fs.writeFileSync(bodyFile, body, "utf8");
+    fs.writeFileSync(titleFile, title, "utf8");
 
-    exec(`gh pr create --draft --title "${title}" --body-file "${bodyFile}" --base main`, ctx.workspace);
+    // Use files for title + body — avoids shell injection from user-provided task text
+    exec(`gh pr create --draft --title-file "${titleFile}" --body-file "${bodyFile}" --base main`, ctx.workspace);
 
     const prUrl = exec(`gh pr view --json url -q .url`, ctx.workspace);
     const prNumber = parseInt(exec(`gh pr view --json number -q .number`, ctx.workspace), 10);
