@@ -1,3 +1,3 @@
-Address the review feedback. Fix the issues identified, push updates.
+Address the review feedback. Fix the issues identified.
 
-Output an updated `diff.patch` artifact.
+When done, run `dispatch done "Fixed review issues"`.

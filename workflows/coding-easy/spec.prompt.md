@@ -4,4 +4,4 @@ Analyze this task and write a technical spec:
 - Files likely affected
 - Approach and estimated complexity
 
-Output a `spec.md` artifact when done.
+Write the spec to `spec.md`, then run `dispatch done --artifact spec.md "Wrote technical spec"`.

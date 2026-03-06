@@ -1,9 +1,6 @@
 Review this implementation against the spec.
 
 Check correctness, edge cases, security, code quality.
+Write your review to `review.md` ending with ACCEPTED or DENIED.
 
-End your review with exactly one of:
-- `ACCEPTED` — code is good to merge
-- `DENIED` — changes needed (explain what)
-
-Output a `review.md` artifact.
+Then run `dispatch done --artifact review.md "ACCEPTED"` or `dispatch done --artifact review.md "DENIED: reason"`.
