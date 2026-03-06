@@ -1,3 +1,6 @@
-Address the review feedback. Fix the issues identified.
+Address the review feedback. Read `review.md` from the artifacts directory. Fix the issues identified.
 
-When done, run `dispatch done "Fixed review issues"`.
+When finished, use the bash tool to execute:
+```
+dispatch done "Fixed review issues"
+```
