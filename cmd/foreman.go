@@ -14,7 +14,7 @@ import (
 	"github.com/Pernek-Enterprises/dispatch/internal/llm"
 	"github.com/Pernek-Enterprises/dispatch/internal/log"
 	"github.com/Pernek-Enterprises/dispatch/internal/pipe"
-	"github.com/Pernek-Enterprises/dispatch/internal/sessions"
+	"github.com/Pernek-Enterprises/dispatch/internal/pi"
 	"github.com/Pernek-Enterprises/dispatch/internal/state"
 	"github.com/Pernek-Enterprises/dispatch/internal/workflows"
 )
@@ -39,12 +39,6 @@ func Foreman() {
 	for id := range models {
 		if !st.IsModelFree(id) && st.Models[id] == nil {
 			st.Models[id] = &state.ModelLock{}
-		}
-	}
-	agents, _ := config.LoadAgents()
-	for id := range agents {
-		if st.Agents[id] == nil {
-			st.Agents[id] = &state.AgentLock{}
 		}
 	}
 	st.Save()
@@ -140,9 +134,6 @@ func handleDone(cfg *config.Config, st *state.State, msg pipe.Message) {
 	if meta.Model != "" {
 		st.UnlockModel(meta.Model)
 	}
-	if meta.Agent != "" && meta.Agent != "stefan" {
-		st.UnlockAgent(meta.Agent)
-	}
 
 	jobs.Move(msg.JobID, "active", "done")
 	advanceWorkflow(cfg, st, meta, result)
@@ -164,9 +155,6 @@ func handleFail(cfg *config.Config, st *state.State, msg pipe.Message) {
 
 	if meta.Model != "" {
 		st.UnlockModel(meta.Model)
-	}
-	if meta.Agent != "" && meta.Agent != "stefan" {
-		st.UnlockAgent(meta.Agent)
 	}
 
 	jobs.Move(msg.JobID, "active", "failed")
@@ -350,23 +338,17 @@ func dispatchPending(cfg *config.Config, st *state.State) {
 			if job.Model != "" && !st.IsModelFree(job.Model) {
 				continue
 			}
-			if job.Agent != "" && !st.IsAgentFree(job.Agent) {
-				continue
-			}
 
-			log.Info("Dispatching work: %s (agent=%s, model=%s)", job.ID, job.Agent, job.Model)
+			log.Info("Dispatching work: %s (model=%s, role=%s)", job.ID, job.Model, job.Agent)
 
 			if job.Model != "" {
 				st.LockModel(job.Model, job.ID)
 			}
-			if job.Agent != "" {
-				st.LockAgent(job.Agent, job.ID)
-			}
 			jobs.Move(job.ID, "pending", "active")
 			st.Save()
 
-			// Spawn or reuse OpenClaw session (non-blocking)
-			dispatchToSession(cfg, job)
+			// Run Pi process (non-blocking)
+			dispatchToPi(cfg, job)
 		}
 	}
 }
@@ -393,7 +375,6 @@ func healthCheck(cfg *config.Config, st *state.State) {
 				st.UnlockModel(job.Model)
 			}
 			if job.Agent != "" && job.Agent != "stefan" {
-				st.UnlockAgent(job.Agent)
 			}
 
 			jobs.WriteResult(job.ID, "active", fmt.Sprintf("TIMEOUT: exceeded %ds deadline", job.Timeout))
@@ -483,7 +464,7 @@ func handleDestroyComplete(cfg *config.Config, st *state.State, completedJob *jo
 	if err != nil {
 		log.Warn("Workflow %s not found for cleanup: %v", completedJob.Workflow, err)
 		// Still do basic cleanup
-		sessions.CleanupTask(taskID)
+		// No sessions to clean up — Pi processes are ephemeral
 		return
 	}
 
@@ -495,7 +476,7 @@ func runDestroyActions(cfg *config.Config, st *state.State, taskID string, wf *w
 	for _, action := range wf.Destroy.Actions {
 		switch action {
 		case "close_sessions":
-			sessions.CleanupTask(taskID)
+			// No sessions to clean up — Pi processes are ephemeral
 			log.Info("Destroy: closed sessions for task %s", taskID)
 
 		case "archive_artifacts":
@@ -575,55 +556,31 @@ func loadSystemPrompt(agentName string) string {
 	return strings.Join(parts, "\n\n")
 }
 
-func dispatchToSession(cfg *config.Config, job jobs.Job) {
-	// Append dispatch instructions to the prompt so the agent knows how to signal completion
-	prompt := job.Prompt + dispatchInstructions(job)
+func dispatchToPi(cfg *config.Config, job jobs.Job) {
+	// Resolve model → provider/model string
+	modelRef := job.Model
+	models, err := config.LoadModels()
+	if err == nil {
+		if m, ok := models[modelRef]; ok && m.Provider != "" {
+			modelRef = fmt.Sprintf("%s/%s", modelRef, m.Name)
+		}
+	}
 
-	// Session = task + agent + model (spawned lazily on first use)
-	err := sessions.Dispatch(&cfg.OpenClaw, job.Task, job.Agent, job.Model, prompt)
+	// Load role-based system prompt
+	role := job.Agent // backward compat: agent field = role
+	systemPrompt := loadSystemPrompt(role)
+
+	err = pi.Run(pi.RunOpts{
+		Model:        modelRef,
+		Prompt:       job.Prompt,
+		SystemPrompt: systemPrompt,
+		JobID:        job.ID,
+		TaskID:       job.Task,
+	})
 	if err != nil {
-		log.Error("Failed to dispatch to %s/%s/%s: %v", job.Task, job.Agent, job.Model, err)
+		log.Error("Failed to dispatch Pi for %s/%s: %v", job.Task, job.Model, err)
 		// Don't fail the job — stays active, will retry on next poll
 	}
-}
-
-// dispatchInstructions returns the instructions appended to every agent prompt
-// telling it how to signal done/ask/fail via the dispatch CLI.
-func dispatchInstructions(job jobs.Job) string {
-	root := config.Root
-	return fmt.Sprintf(`
-
----
-
-## Dispatch Communication
-
-When you finish this step, signal completion by running:
-
-`+"```bash"+`
-dispatch done --job %s --root %s "brief summary of what you did"
-`+"```"+`
-
-To attach artifacts (files to pass to next steps):
-
-`+"```bash"+`
-dispatch done --job %s --root %s --artifact path/to/file.md "summary"
-`+"```"+`
-
-If you're stuck and need help:
-
-`+"```bash"+`
-dispatch ask --job %s --root %s "your question"
-dispatch ask --job %s --root %s --escalate "need human decision"
-`+"```"+`
-
-If you cannot complete this step:
-
-`+"```bash"+`
-dispatch fail --job %s --root %s "reason for failure"
-`+"```"+`
-
-**You MUST call one of these commands when done. Do not just stop.**`,
-		job.ID, root, job.ID, root, job.ID, root, job.ID, root, job.ID, root)
 }
 
 func joinStrings(ss []string) string {

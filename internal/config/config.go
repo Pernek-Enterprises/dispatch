@@ -23,7 +23,8 @@ type Config struct {
 	MaxLoopIterations int                `json:"maxLoopIterations"`
 	DefaultTimeouts   map[string]int     `json:"defaultTimeouts"`
 	Notifications     NotificationConfig `json:"notifications"`
-	OpenClaw          OpenClawConfig     `json:"openclaw"`
+	Pi                PiConfig           `json:"pi"`
+	OpenClaw          PiConfig           `json:"openclaw"` // deprecated, use pi
 }
 
 type NotificationConfig struct {
@@ -31,17 +32,15 @@ type NotificationConfig struct {
 	Channel    string `json:"channel"`
 }
 
-type OpenClawConfig struct {
-	// Path to the openclaw CLI binary
-	Binary string `json:"binary"`
-	// Agent name mapping: dispatch agent name → OpenClaw agent ID
-	Agents map[string]OpenClawAgentCfg `json:"agents"`
+type PiConfig struct {
+	// Path to the Pi binary (default: auto-detect)
+	Binary       string   `json:"binary"`
+	// Default tools for Pi (default: read,bash,edit,write)
+	DefaultTools []string `json:"defaultTools"`
 }
 
-type OpenClawAgentCfg struct {
-	// OpenClaw agent ID (as shown in `openclaw agents list`)
-	ID string `json:"id"`
-}
+// Kept for backward compat — will be removed
+type OpenClawConfig = PiConfig
 
 type Model struct {
 	Name     string `json:"name"`
@@ -73,8 +72,9 @@ func Load() (*Config, error) {
 	if cfg.MaxLoopIterations == 0 {
 		cfg.MaxLoopIterations = 3
 	}
-	if cfg.OpenClaw.Binary == "" {
-		cfg.OpenClaw.Binary = "openclaw"
+	// Merge deprecated openclaw config into pi
+	if cfg.Pi.Binary == "" && cfg.OpenClaw.Binary != "" {
+		cfg.Pi.Binary = cfg.OpenClaw.Binary
 	}
 	return cfg, nil
 }
