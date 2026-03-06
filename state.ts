@@ -20,10 +20,11 @@ export interface AppState {
   models: Record<string, ModelLock>;
   tasks: Record<string, TaskState>;
   deliverableRetries: Record<string, number>; // key: "<taskId>:<step>", value: retry count
+  triaged: Record<string, boolean>;           // key: jobId — true if triage already ran
 }
 
 export class State {
-  private data: AppState = { models: {}, tasks: {}, deliverableRetries: {} };
+  private data: AppState = { models: {}, tasks: {}, deliverableRetries: {}, triaged: {} };
 
   static load(): State {
     const s = new State();
@@ -34,6 +35,7 @@ export class State {
         s.data.models = raw.models ?? {};
         s.data.tasks = raw.tasks ?? {};
         s.data.deliverableRetries = raw.deliverableRetries ?? {};
+        s.data.triaged = raw.triaged ?? {};
       } catch { /* start fresh */ }
     }
     return s;
@@ -81,5 +83,13 @@ export class State {
 
   clearDeliverableRetries(taskId: string, step: string): void {
     delete this.data.deliverableRetries[`${taskId}:${step}`];
+  }
+
+  hasBeenTriaged(jobId: string): boolean {
+    return this.data.triaged[jobId] === true;
+  }
+
+  markTriaged(jobId: string): void {
+    this.data.triaged[jobId] = true;
   }
 }
