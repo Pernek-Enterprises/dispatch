@@ -9,8 +9,8 @@
     "answer": 60
   },
   "notifications": {
-    "escalation": "telegram",
-    "channel": ""
+    "escalation": "discord",
+    "target": "#dispatch"
   },
   "pi": {
     "binary": "pi",

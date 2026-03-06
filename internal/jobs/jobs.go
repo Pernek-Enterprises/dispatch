@@ -190,3 +190,11 @@ func GetMeta(id, folder string) *Job {
 	}
 	return &j
 }
+
+func WriteMeta(id, folder string, job *Job) error {
+	data, err := json.MarshalIndent(job, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir(folder), id+".json"), data, 0644)
+}
