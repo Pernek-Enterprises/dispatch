@@ -137,11 +137,21 @@ async function runSession(
       try {
         return await origBash.execute(toolCallId, params as Static<TSchema>, signal, onUpdate);
       } catch (e) {
-        // Non-zero exit: return output as success so model doesn't retry
-        const msg = String(e);
-        log.info(`[bash] non-zero exit — returning as info (job ${job.id}): ${msg.slice(0, 80)}`);
+        // Non-zero exit: return output as informational text.
+        // Strip "Error: " prefixes and "Command exited with code N" framing so
+        // the model reads it as script output rather than a tool failure.
+        const raw = String(e);
+        const lines = raw.split("\n").filter(l =>
+          !l.startsWith("Error: Command aborted") &&
+          !l.match(/^Error: Command exited with code \d+/) &&
+          l !== ""
+        );
+        // Remove leading "Error: " from remaining lines (exception wrapping)
+        const cleaned = lines.map(l => l.replace(/^Error:\s*/, "")).join("\n").trim();
+        const output = cleaned || "(no output)";
+        log.info(`[bash] non-zero exit — returning as info (job ${job.id}): ${output.slice(0, 80)}`);
         return {
-          content: [{ type: "text" as const, text: msg }],
+          content: [{ type: "text" as const, text: `Command output:\n${output}` }],
           details: {},
         };
       }
