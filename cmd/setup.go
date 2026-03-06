@@ -50,6 +50,12 @@ func Setup() {
 	}
 	fmt.Println()
 
+	// Detect repo directory (where dispatch binary / git repo lives)
+	repoDir := detectRepoDir()
+	if repoDir != "" {
+		fmt.Printf("  Repo detected: %s\n", repoDir)
+	}
+
 	// Create directory structure
 	dirs := []string{
 		"jobs/pending", "jobs/active", "jobs/done", "jobs/failed",
@@ -59,6 +65,11 @@ func Setup() {
 		os.MkdirAll(filepath.Join(root, d), 0755)
 	}
 	fmt.Println("  ✓ Directory structure created")
+
+	// Copy repo assets (workflows, prompts, skill) into root
+	if repoDir != "" && repoDir != root {
+		copyRepoAssets(repoDir, root)
+	}
 
 	// ── Config ──────────────────────────────────────────────────────
 
@@ -364,6 +375,108 @@ func copyExample(root, name string) {
 		fmt.Printf("  ✓ %s created from example\n", name)
 	} else {
 		fmt.Printf("  ⚠ %s.example not found — create %s manually\n", name, name)
+	}
+}
+
+func detectRepoDir() string {
+	// Try: directory where the binary lives
+	exe, err := os.Executable()
+	if err == nil {
+		dir := filepath.Dir(exe)
+		if isRepoDir(dir) {
+			return dir
+		}
+	}
+	// Try: current working directory
+	cwd, err := os.Getwd()
+	if err == nil {
+		if isRepoDir(cwd) {
+			return cwd
+		}
+	}
+	return ""
+}
+
+func isRepoDir(dir string) bool {
+	// Check for dispatch repo markers
+	markers := []string{"SPEC.md", "skill/SKILL.md", "workflows/coding-easy.json"}
+	for _, m := range markers {
+		if _, err := os.Stat(filepath.Join(dir, m)); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func copyRepoAssets(repoDir, root string) {
+	// Copy skill/
+	copyDirContents(filepath.Join(repoDir, "skill"), filepath.Join(root, "skill"))
+
+	// Copy workflows/
+	copyDirRecursive(filepath.Join(repoDir, "workflows"), filepath.Join(root, "workflows"))
+
+	// Copy prompt .example files and create .md if missing
+	srcPrompts := filepath.Join(repoDir, "prompts")
+	dstPrompts := filepath.Join(root, "prompts")
+	entries, err := os.ReadDir(srcPrompts)
+	if err == nil {
+		for _, e := range entries {
+			src := filepath.Join(srcPrompts, e.Name())
+			dst := filepath.Join(dstPrompts, e.Name())
+
+			// Always copy .example files
+			if strings.HasSuffix(e.Name(), ".example") {
+				data, _ := os.ReadFile(src)
+				os.WriteFile(dst, data, 0644)
+
+				// Create the real file from example if missing
+				realName := strings.TrimSuffix(e.Name(), ".example")
+				realPath := filepath.Join(dstPrompts, realName)
+				if _, err := os.Stat(realPath); err != nil {
+					os.WriteFile(realPath, data, 0644)
+					fmt.Printf("  ✓ prompts/%s created from example\n", realName)
+				}
+			}
+		}
+	}
+
+	fmt.Println("  ✓ Repo assets copied to dispatch root")
+}
+
+func copyDirContents(src, dst string) {
+	os.MkdirAll(dst, 0755)
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err == nil {
+			os.WriteFile(filepath.Join(dst, e.Name()), data, 0644)
+		}
+	}
+}
+
+func copyDirRecursive(src, dst string) {
+	os.MkdirAll(dst, 0755)
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		srcPath := filepath.Join(src, e.Name())
+		dstPath := filepath.Join(dst, e.Name())
+		if e.IsDir() {
+			copyDirRecursive(srcPath, dstPath)
+		} else {
+			data, err := os.ReadFile(srcPath)
+			if err == nil {
+				os.WriteFile(dstPath, data, 0644)
+			}
+		}
 	}
 }
 

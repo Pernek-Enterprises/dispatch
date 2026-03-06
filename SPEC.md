@@ -218,20 +218,20 @@ Four commands.
 
 ```bash
 # Signal completion
-dispatch done --job <id> --root ~/dispatch "summary"
-dispatch done --job <id> --root ~/dispatch --artifact spec.md "summary"
+dispatch done --job <id> --root ~/.dispatch "summary"
+dispatch done --job <id> --root ~/.dispatch --artifact spec.md "summary"
 
 # Ask a question (auto-answered by LLM)
-dispatch ask --job <id> --root ~/dispatch "question"
+dispatch ask --job <id> --root ~/.dispatch "question"
 
 # Escalate to human
-dispatch ask --job <id> --root ~/dispatch --escalate "need human decision"
+dispatch ask --job <id> --root ~/.dispatch --escalate "need human decision"
 
 # Report failure
-dispatch fail --job <id> --root ~/dispatch "reason"
+dispatch fail --job <id> --root ~/.dispatch "reason"
 
 # Answer a waiting job (used by human/Clawdia)
-dispatch answer --job <id> --root ~/dispatch "answer"
+dispatch answer --job <id> --root ~/.dispatch "answer"
 ```
 
 ### How it works
@@ -371,7 +371,7 @@ All config files have `.example` templates. Local files are gitignored.
 ## 12. File Structure
 
 ```
-~/dispatch/
+~/.dispatch/
 ├── dispatch                ← Go binary (foreman + CLI)
 ├── config.json             ← settings
 ├── models.json             ← model endpoints

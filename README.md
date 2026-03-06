@@ -76,14 +76,14 @@ Pi → dispatch ask --escalate "question"
 
 ```bash
 # Agent commands (used by Pi during work)
-dispatch done --job <id> --root ~/dispatch "summary"
-dispatch done --job <id> --root ~/dispatch --artifact file.md "summary"
-dispatch ask --job <id> --root ~/dispatch "question"
-dispatch ask --job <id> --root ~/dispatch --escalate "need human"
-dispatch fail --job <id> --root ~/dispatch "reason"
+dispatch done --job <id> --root ~/.dispatch "summary"
+dispatch done --job <id> --root ~/.dispatch --artifact file.md "summary"
+dispatch ask --job <id> --root ~/.dispatch "question"
+dispatch ask --job <id> --root ~/.dispatch --escalate "need human"
+dispatch fail --job <id> --root ~/.dispatch "reason"
 
 # Human commands
-dispatch answer --job <id> --root ~/dispatch "answer"
+dispatch answer --job <id> --root ~/.dispatch "answer"
 
 # Management
 dispatch task create "description" --workflow coding-easy
@@ -165,7 +165,7 @@ Teaches Pi agents how to use `dispatch done/ask/fail`. Loaded automatically on e
 ## File Structure
 
 ```
-~/dispatch/
+~/.dispatch/
 ├── dispatch              ← Go binary (foreman + CLI)
 ├── config.json           ← settings
 ├── models.json           ← model endpoints

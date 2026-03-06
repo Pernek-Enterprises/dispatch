@@ -61,7 +61,7 @@ Commands:
   dispatch status                      Show current state
 
 Environment:
-  DISPATCH_ROOT      Root directory (default: ~/dispatch)
+  DISPATCH_ROOT      Root directory (default: ~/.dispatch)
   DISPATCH_JOB_ID    Current job ID (set by foreman)
   DISPATCH_TASK_ID   Current task ID (set by foreman)`)
 }
