@@ -192,7 +192,19 @@ func handleAnswer(cfg *config.Config, st *state.State, msg pipe.Message) {
 		return
 	}
 
-	// Re-dispatch the original job with the answer appended to the prompt
+	// Human jobs (ready step) — treat answer as approval/completion, advance workflow
+	if meta.Type == "human" {
+		log.Info("Human job %s answered — advancing workflow", msg.JobID)
+		if meta.Model != "" {
+			st.UnlockModel(meta.Model)
+		}
+		jobs.WriteResult(msg.JobID, "active", msg.Message)
+		jobs.Move(msg.JobID, "active", "done")
+		advanceWorkflow(cfg, st, meta, msg.Message)
+		return
+	}
+
+	// Work jobs — re-dispatch Pi with the answer appended to the prompt
 	answer := fmt.Sprintf("\n\n---\n\n**Human answered your question:**\n\n%s\n\nContinue with your work.", msg.Message)
 	meta.Prompt = meta.Prompt + answer
 
