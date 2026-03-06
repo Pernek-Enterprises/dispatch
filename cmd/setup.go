@@ -380,6 +380,17 @@ func detectRepoDir() string {
 			return cwd
 		}
 	}
+	// Try: common locations
+	home, _ := os.UserHomeDir()
+	for _, candidate := range []string{
+		filepath.Join(home, "dispatch"),
+		filepath.Join(home, "src", "dispatch"),
+		"/opt/dispatch",
+	} {
+		if isRepoDir(candidate) {
+			return candidate
+		}
+	}
 	return ""
 }
 
