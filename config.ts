@@ -15,6 +15,7 @@ export interface Config {
   pollIntervalMs: number;
   pipePath: string;
   maxLoopIterations: number;
+  maxDeliverableRetries: number;
   defaultTimeouts: Record<string, number>;
   notifications: {
     escalation: string;
@@ -33,6 +34,7 @@ const DEFAULTS: Config = {
   pollIntervalMs: 30000,
   pipePath: "/tmp/dispatch.pipe",
   maxLoopIterations: 3,
+  maxDeliverableRetries: 3,
   defaultTimeouts: {},
   notifications: { escalation: "", target: "" },
   pi: {},

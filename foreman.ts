@@ -13,7 +13,7 @@ import {
 import { loadWorkflow, getNextStep, getRole, getDestroyAgents, type Workflow, type Step } from "./workflows.js";
 import { State, type TaskState } from "./state.js";
 import { createPipe, listenPipe, type PipeMessage } from "./pipe.js";
-import { notifyReady, notifyFailure, notifyMaxIterations } from "./escalate.js";
+import { notifyReady, notifyFailure, notifyMaxIterations, notifyDeliverableRetry } from "./escalate.js";
 import { dispatchJob, abortSession } from "./runner.js";
 import { log } from "./log.js";
 import { loadSystemPromptPublic } from "./prompts.js";
@@ -36,6 +36,14 @@ When done, call \`task_done\` with "cleanup complete".`;
 
 // ─── Workflow advancement ────────────────────────────────────────────────────
 
+/** Check that all declared artifactsOut files exist. Returns list of missing files. */
+function checkDeliverables(job: Job, wf: Workflow): string[] {
+  const step = wf.steps[job.step];
+  if (!step?.artifactsOut?.length) return [];
+  const artifactDir = path.join(ROOT, "artifacts", job.task);
+  return step.artifactsOut.filter(f => !fs.existsSync(path.join(artifactDir, f)));
+}
+
 function advanceWorkflow(cfg: Config, st: State, completedJob: Job, result: string): void {
   let wf: Workflow;
   try { wf = loadWorkflow(completedJob.workflow); }
@@ -46,6 +54,34 @@ function advanceWorkflow(cfg: Config, st: State, completedJob: Job, result: stri
     handleDestroyComplete(cfg, st, completedJob, wf);
     return;
   }
+
+  // ─── Deliverables gate ───────────────────────────────────────────────────
+  // Check all declared artifactsOut files exist before advancing.
+  const missingFiles = checkDeliverables(completedJob, wf);
+  if (missingFiles.length > 0) {
+    const maxRetries = cfg.maxDeliverableRetries ?? 3;
+    const attempt = st.incrementDeliverableRetries(completedJob.task, completedJob.step);
+    log.warn(`Deliverables missing for ${completedJob.id} (attempt ${attempt}/${maxRetries}): ${missingFiles.join(", ")}`);
+    notifyDeliverableRetry(cfg, completedJob.id, completedJob.task, completedJob.step, missingFiles, attempt, maxRetries);
+
+    if (attempt >= maxRetries) {
+      log.warn(`Max deliverable retries (${maxRetries}) for ${completedJob.step} on task ${completedJob.task} — failing`);
+      notifyFailure(cfg, completedJob.id, completedJob.task, `Step '${completedJob.step}' failed to produce required files after ${maxRetries} attempts: ${missingFiles.join(", ")}`);
+      return;
+    }
+
+    // Re-dispatch the same step with a retry prompt appended
+    const retryJob: Job = {
+      ...completedJob,
+      id: completedJob.id, // reuse same job so model/lock context is consistent
+      prompt: (completedJob.prompt ?? "") + `\n\n---\n\n**⚠️ Retry ${attempt}/${maxRetries}: Missing deliverables**\n\nYour previous run did not produce all required files.\nMissing: ${missingFiles.map(f => `\`${f}\``).join(", ")}\n\nPlease create the missing files and call \`task_done\` again.`,
+    };
+    if (completedJob.model) st.lockModel(completedJob.model, completedJob.id);
+    moveJob(completedJob.id, "done", "active");
+    dispatchJobFromMeta(cfg, retryJob);
+    return;
+  }
+  st.clearDeliverableRetries(completedJob.task, completedJob.step);
 
   const nextStepName = getNextStep(wf, completedJob.step, result);
   if (!nextStepName) {
