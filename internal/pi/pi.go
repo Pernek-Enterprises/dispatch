@@ -51,6 +51,12 @@ func Run(opts RunOpts) error {
 		args = append(args, "--append-system-prompt", opts.SystemPrompt)
 	}
 
+	// Load dispatch skill explicitly (Pi doesn't auto-load skills in --print mode)
+	skillDir := filepath.Join(config.Root, "skill")
+	if _, err := os.Stat(filepath.Join(skillDir, "SKILL.md")); err == nil {
+		args = append(args, "--skill", skillDir)
+	}
+
 	// Tools
 	tools := opts.Tools
 	if len(tools) == 0 {
