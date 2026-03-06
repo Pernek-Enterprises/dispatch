@@ -208,7 +208,7 @@ func createTask(description, workflowName, priority string) string {
 		Task:     taskID,
 		Workflow: workflowName,
 		Step:     wf.FirstStep,
-		Agent:    firstStep.Agent,
+		Agent:    workflows.GetRole(firstStep),
 		Model:    firstStep.Model,
 		Type:     jobType,
 		Priority: priority,
