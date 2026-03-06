@@ -15,6 +15,7 @@ export interface Job {
   created: string;
   timeout: number;
   iteration?: number;
+  project?: string;   // project name (optional — tasks without project work as before)
   prompt?: string;    // loaded separately, not in JSON
 }
 
@@ -28,6 +29,7 @@ export interface CreateOpts {
   priority?: string;
   timeout?: number;
   iteration?: number;
+  project?: string;
   prompt?: string;
 }
 
@@ -67,6 +69,7 @@ export function createJob(opts: CreateOpts): string {
     created: new Date().toISOString(),
     timeout: opts.timeout ?? 120,
     iteration: opts.iteration ?? 1,
+    ...(opts.project ? { project: opts.project } : {}),
   };
 
   const dir = jobDir("pending");

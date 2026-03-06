@@ -6,22 +6,25 @@ import { createJob, newTaskId, listJobs } from "../jobs.js";
 import { loadWorkflow, listWorkflows, getRole } from "../workflows.js";
 import { sendPipe } from "../pipe.js";
 import { loadSystemPromptPublic } from "../prompts.js";
+import { loadProject, listProjects } from "../project.js";
 
 export function taskCmd(args: string[]): void {
   if (!args.length || args[0] === "help") {
     console.log(`dispatch task — manage tasks
 
 Commands:
-  dispatch task create "description" --workflow coding-easy
+  dispatch task create "description" --workflow coding-easy [--project agentictodo]
   dispatch task create --interactive
   dispatch task list
-  dispatch task show <task-id>`);
+  dispatch task show <task-id>
+  dispatch task projects`);
     return;
   }
 
   switch (args[0]) {
     case "create": taskCreate(args.slice(1)); break;
     case "list":   taskList(); break;
+    case "projects": taskProjects(); break;
     case "show":
       if (args.length < 2) { console.error("Usage: dispatch task show <task-id>"); process.exit(1); }
       taskShow(args[1]);
@@ -37,10 +40,12 @@ function taskCreate(args: string[]): void {
   let workflowName = "";
   let priority = "normal";
   let interactive = false;
+  let projectName = "";
 
   for (let i = 0; i < args.length; i++) {
     if ((args[i] === "--workflow" || args[i] === "-w") && args[i + 1]) { workflowName = args[++i]; }
     else if ((args[i] === "--priority" || args[i] === "-p") && args[i + 1]) { priority = args[++i]; }
+    else if ((args[i] === "--project" || args[i] === "-P") && args[i + 1]) { projectName = args[++i]; }
     else if (args[i] === "--interactive" || args[i] === "-i") { interactive = true; }
     else { descParts.push(args[i]); }
   }
@@ -49,7 +54,7 @@ function taskCreate(args: string[]): void {
 
   const description = descParts.join(" ");
   if (!description) {
-    console.error(`Usage: dispatch task create "description" --workflow coding-easy`);
+    console.error(`Usage: dispatch task create "description" --workflow coding-easy [--project myproject]`);
     process.exit(1);
   }
 
@@ -62,8 +67,17 @@ function taskCreate(args: string[]): void {
     }
   }
 
-  const taskId = doCreateTask(description, workflowName, priority);
-  console.log(`✓ Task created: ${taskId}\n  workflow: ${workflowName}\n  priority: ${priority}`);
+  // Validate project if specified
+  if (projectName) {
+    try { loadProject(projectName); } catch (e) {
+      console.error(`Project not found: ${projectName}\nAvailable: ${listProjects().join(", ") || "(none)"}`);
+      process.exit(1);
+    }
+  }
+
+  const taskId = doCreateTask(description, workflowName, priority, projectName);
+  const projectLine = projectName ? `\n  project:  ${projectName}` : "";
+  console.log(`✓ Task created: ${taskId}\n  workflow: ${workflowName}\n  priority: ${priority}${projectLine}`);
 }
 
 function taskCreateInteractive(): void {
@@ -107,7 +121,25 @@ function taskCreateInteractive(): void {
   })().catch((e) => { console.error(e); process.exit(1); });
 }
 
-function doCreateTask(description: string, workflowName: string, priority: string): string {
+function taskProjects(): void {
+  const projects = listProjects();
+  if (!projects.length) {
+    console.log(`No projects. Create one at: ~/.dispatch/projects/<name>.json`);
+    return;
+  }
+  console.log("Projects:");
+  for (const name of projects) {
+    try {
+      const p = loadProject(name);
+      const ws = p.workspace ? `  workspace: ${p.workspace}` : "";
+      console.log(`  ${name}${p.description ? ` — ${p.description}` : ""}${ws ? `\n${ws}` : ""}`);
+    } catch {
+      console.log(`  ${name} (failed to load)`);
+    }
+  }
+}
+
+function doCreateTask(description: string, workflowName: string, priority: string, projectName = ""): string {
   const wf = loadWorkflow(workflowName);
   const firstStep = wf.steps[wf.firstStep];
   if (!firstStep) { console.error(`First step "${wf.firstStep}" not found in workflow`); process.exit(1); }
@@ -129,6 +161,7 @@ function doCreateTask(description: string, workflowName: string, priority: strin
     type: jobType,
     priority,
     timeout: firstStep.timeout ?? 120,
+    project: projectName || undefined,
     prompt,
   });
 

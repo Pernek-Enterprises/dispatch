@@ -15,6 +15,7 @@ import { State, type TaskState } from "./state.js";
 import { createPipe, listenPipe, type PipeMessage } from "./pipe.js";
 import { notifyReady, notifyFailure, notifyMaxIterations, notifyDeliverableRetry, notifyTriageAction } from "./escalate.js";
 import { runTriage } from "./triage.js";
+import { loadProject, runHooks, type Project, type HookContext } from "./project.js";
 import { dispatchJob, abortSession } from "./runner.js";
 import { log } from "./log.js";
 import { loadSystemPromptPublic } from "./prompts.js";
@@ -45,7 +46,7 @@ function checkDeliverables(job: Job, wf: Workflow): string[] {
   return step.artifactsOut.filter(f => !fs.existsSync(path.join(artifactDir, f)));
 }
 
-function advanceWorkflow(cfg: Config, st: State, completedJob: Job, result: string): void {
+function advanceWorkflow(cfg: Config, st: State, completedJob: Job, result: string, project?: Project): void {
   let wf: Workflow;
   try { wf = loadWorkflow(completedJob.workflow); }
   catch (e) { log.warn(`Workflow ${completedJob.workflow} not found: ${e}`); return; }
@@ -102,6 +103,28 @@ function advanceWorkflow(cfg: Config, st: State, completedJob: Job, result: stri
   if (!nextStep) {
     log.error(`Step ${nextStepName} not found in workflow ${completedJob.workflow}`);
     return;
+  }
+
+  // Run branch-specific hooks (e.g. after_review_accepted, after_review_denied)
+  if (project) {
+    const dispatchRoot = process.env.DISPATCH_ROOT ?? path.join(os.homedir(), ".dispatch");
+    const currentStep = wf.steps[completedJob.step];
+    if (currentStep?.branch) {
+      const upper = result.toUpperCase();
+      for (const keyword of Object.keys(currentStep.branch)) {
+        if (upper.includes(keyword.toUpperCase())) {
+          const hookCtx: HookContext = {
+            project,
+            taskId: completedJob.task,
+            step: completedJob.step,
+            artifactDir: path.join(dispatchRoot, "artifacts", completedJob.task),
+            workspace: project.workspace ?? path.join(dispatchRoot, "artifacts", completedJob.task),
+          };
+          runHooks(`after_${completedJob.step}_${keyword.toLowerCase()}`, hookCtx);
+          break;
+        }
+      }
+    }
   }
 
   // Iteration tracking
@@ -316,9 +339,16 @@ function readResult(id: string, folder: string): string {
 
 // ─── Dispatcher ───────────────────────────────────────────────────────────────
 
+function loadJobProject(job: Job): Project | undefined {
+  if (!job.project) return undefined;
+  try { return loadProject(job.project); }
+  catch (e) { log.warn(`Could not load project "${job.project}": ${e}`); return undefined; }
+}
+
 function dispatchJobFromMeta(cfg: Config, job: Job): void {
   const role = job.agent;
   const systemPrompt = loadSystemPrompt(role);
+  const project = loadJobProject(job);
 
   dispatchJob(cfg, job, systemPrompt, {
     onDone: async (jobId, summary) => {
@@ -327,7 +357,19 @@ function dispatchJobFromMeta(cfg: Config, job: Job): void {
       writeResult(jobId, "active", summary);
       if (meta.model) st.unlockModel(meta.model);
       moveJob(jobId, "active", "done");
-      advanceWorkflow(cfg, st, meta, summary);
+      // Run project hooks before advancing (hooks fire before next step dispatches)
+      if (project?.hooks) {
+        const dispatchRoot = process.env.DISPATCH_ROOT ?? path.join(os.homedir(), ".dispatch");
+        const hookCtx: HookContext = {
+          project,
+          taskId: meta.task,
+          step: meta.step,
+          artifactDir: path.join(dispatchRoot, "artifacts", meta.task),
+          workspace: project.workspace ?? path.join(dispatchRoot, "artifacts", meta.task),
+        };
+        runHooks(`after_${meta.step}`, hookCtx);
+      }
+      advanceWorkflow(cfg, st, meta, summary, project);
       st.save();
     },
     onAsk: async (jobId, question, escalate) => {
@@ -373,7 +415,7 @@ function dispatchJobFromMeta(cfg: Config, job: Job): void {
             writeResult(jobId, "active", triageAction.summary);
             if (meta.model) st.unlockModel(meta.model);
             moveJob(jobId, "active", "done");
-            advanceWorkflow(cfg, st, meta, triageAction.summary);
+            advanceWorkflow(cfg, st, meta, triageAction.summary, project);
             st.save();
             return;
           }
@@ -383,7 +425,7 @@ function dispatchJobFromMeta(cfg: Config, job: Job): void {
             writeResult(jobId, "active", `SKIPPED: ${triageAction.reason}`);
             if (meta.model) st.unlockModel(meta.model);
             moveJob(jobId, "active", "done");
-            advanceWorkflow(cfg, st, meta, `SKIPPED: ${triageAction.reason}`);
+            advanceWorkflow(cfg, st, meta, `SKIPPED: ${triageAction.reason}`, project);
             st.save();
             return;
           }
