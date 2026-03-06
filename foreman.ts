@@ -13,7 +13,8 @@ import {
 import { loadWorkflow, getNextStep, getRole, getDestroyAgents, type Workflow, type Step } from "./workflows.js";
 import { State, type TaskState } from "./state.js";
 import { createPipe, listenPipe, type PipeMessage } from "./pipe.js";
-import { notifyReady, notifyFailure, notifyMaxIterations, notifyDeliverableRetry } from "./escalate.js";
+import { notifyReady, notifyFailure, notifyMaxIterations, notifyDeliverableRetry, notifyTriageAction } from "./escalate.js";
+import { runTriage } from "./triage.js";
 import { dispatchJob, abortSession } from "./runner.js";
 import { log } from "./log.js";
 import { loadSystemPromptPublic } from "./prompts.js";
@@ -335,6 +336,65 @@ function dispatchJobFromMeta(cfg: Config, job: Job): void {
     onFail: async (jobId, reason) => {
       const meta = getJobMeta(jobId, "active");
       if (!meta) return;
+
+      // ─── Agentic triage ──────────────────────────────────────────────────
+      // Before escalating to human, ask the 27B model to diagnose and
+      // recommend a recovery action. Runs once per job, only if model is free.
+      const triageModelKey = cfg.triage?.model ?? "local-27b";
+      const canTriage = cfg.triage?.enabled !== false &&
+                        !st.hasBeenTriaged(jobId) &&
+                        st.isModelFree(triageModelKey);
+
+      if (canTriage) {
+        st.markTriaged(jobId);
+        st.save();
+        log.info(`Running triage for job ${jobId} (reason: ${reason})`);
+
+        const dispatchRoot = process.env.DISPATCH_ROOT ?? path.join(os.homedir(), ".dispatch");
+        const triageAction = await runTriage(cfg, meta, reason, dispatchRoot);
+
+        switch (triageAction.action) {
+          case "retry": {
+            log.info(`Triage recommends retry for ${jobId}: ${triageAction.reason}`);
+            notifyTriageAction(cfg, jobId, meta.task, "retry", triageAction.reason);
+            const retryJob: Job = {
+              ...meta,
+              prompt: (meta.prompt ?? "") + `\n\n---\n\n**🔍 Triage note:** ${triageAction.modifiedPrompt}`,
+            };
+            if (meta.model) st.lockModel(meta.model, jobId);
+            // Job stays in active/ — re-dispatch it
+            dispatchJobFromMeta(cfg, retryJob);
+            st.save();
+            return;
+          }
+          case "done": {
+            log.info(`Triage says job ${jobId} is done: ${triageAction.reason}`);
+            notifyTriageAction(cfg, jobId, meta.task, "done", triageAction.reason);
+            writeResult(jobId, "active", triageAction.summary);
+            if (meta.model) st.unlockModel(meta.model);
+            moveJob(jobId, "active", "done");
+            advanceWorkflow(cfg, st, meta, triageAction.summary);
+            st.save();
+            return;
+          }
+          case "skip": {
+            log.info(`Triage says skip step ${meta.step} for task ${meta.task}: ${triageAction.reason}`);
+            notifyTriageAction(cfg, jobId, meta.task, "skip", triageAction.reason);
+            writeResult(jobId, "active", `SKIPPED: ${triageAction.reason}`);
+            if (meta.model) st.unlockModel(meta.model);
+            moveJob(jobId, "active", "done");
+            advanceWorkflow(cfg, st, meta, `SKIPPED: ${triageAction.reason}`);
+            st.save();
+            return;
+          }
+          case "escalate":
+          default:
+            log.info(`Triage recommends escalation for ${jobId}: ${triageAction.reason}`);
+            // fall through to normal failure handling
+        }
+      }
+
+      // Normal failure path
       writeResult(jobId, "active", `FAILED: ${reason}`);
       if (meta.model) st.unlockModel(meta.model);
       moveJob(jobId, "active", "failed");

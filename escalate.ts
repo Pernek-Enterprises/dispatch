@@ -48,6 +48,13 @@ export function notifyFailure(cfg: Config, jobId: string, taskId: string, reason
   notify(cfg, jobId, taskId, body);
 }
 
+export function notifyTriageAction(cfg: Config, jobId: string, taskId: string, action: string, reason: string): void {
+  const icons: Record<string, string> = { retry: "🔄", done: "✅", skip: "⏭️", escalate: "🚨" };
+  const icon = icons[action] ?? "🔍";
+  const body = `${icon} **Triage** — **Task:** ${taskId} | **Job:** ${jobId}\n\nAction: \`${action}\`\nReason: ${reason}`;
+  notify(cfg, jobId, taskId, body);
+}
+
 export function notifyDeliverableRetry(cfg: Config, jobId: string, taskId: string, step: string, missing: string[], attempt: number, maxAttempts: number): void {
   const body = [
     `⚠️ **Dispatch** — **Task:** ${taskId} | **Step:** ${step}`,

@@ -28,6 +28,12 @@ export interface Config {
   };
   // Model registry: maps "local-9b" → provider config
   models: Record<string, ModelConfig>;
+  // Agentic triage — runs before job escalation
+  triage?: {
+    enabled?: boolean;   // default true
+    model?: string;      // default "local-27b"
+    timeoutMs?: number;  // default 90000
+  };
 }
 
 const DEFAULTS: Config = {
