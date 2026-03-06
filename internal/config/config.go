@@ -13,7 +13,7 @@ func init() {
 	Root = os.Getenv("DISPATCH_ROOT")
 	if Root == "" {
 		home, _ := os.UserHomeDir()
-		Root = filepath.Join(home, "dispatch")
+		Root = filepath.Join(home, ".dispatch")
 	}
 }
 
