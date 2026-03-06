@@ -35,9 +35,13 @@ func Run(opts RunOpts) error {
 		binary = findPi()
 	}
 
+	// Session dir: ~/.dispatch/sessions/<job-id> for observability
+	sessionDir := filepath.Join(config.Root, "sessions")
+	os.MkdirAll(sessionDir, 0755)
+
 	args := []string{
 		"--print",
-		"--no-session",
+		"--session-dir", sessionDir,
 		"--model", opts.Model,
 	}
 
