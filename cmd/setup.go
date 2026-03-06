@@ -59,7 +59,7 @@ func Setup() {
 	// Create directory structure
 	dirs := []string{
 		"jobs/pending", "jobs/active", "jobs/done", "jobs/failed",
-		"artifacts", "logs", "workflows", "agents", "skill",
+		"artifacts", "logs", "sessions", "workflows", "agents", "skill",
 	}
 	for _, d := range dirs {
 		os.MkdirAll(filepath.Join(root, d), 0755)
