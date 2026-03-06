@@ -1,4 +1,9 @@
-# Binary
+# TypeScript build output
+node_modules/
+dist/
+*.js.map
+
+# Go binary (removed — project is now TypeScript-only)
 dispatch
 dispatch-linux-*
 

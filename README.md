@@ -2,100 +2,77 @@
 
 Local-first, file-based agent orchestration. Route tasks through coding workflows on local LLMs — no database, no cloud, no heavyweight runtime.
 
-> **Status:** The TypeScript rewrite (`dispatch-ts/`) is the active development branch. This Go implementation is the stable reference. See [SPEC-TS-REWRITE.md](./SPEC-TS-REWRITE.md) for migration details.
+**This is the TypeScript rewrite** of the original Go implementation. It uses the [Pi SDK](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) directly instead of shelling out to a `pi` subprocess, giving full control over tool execution, loop detection, and job signalling.
+
+## Why TypeScript
+
+The Go version shelled out to `pi --print` and relied on the agent calling `bash("dispatch done --job $ID")` to signal completion. When the 9B model got confused, it would loop indefinitely with no way to intervene.
+
+The TypeScript version uses the Pi SDK in-process:
+- **Tool result interception** — `edit` returning "identical content" is normalized to success
+- **Loop detection** — same tool call repeated 5x → session aborts cleanly
+- **`task_done` / `task_ask` / `task_fail` tools** — model calls a tool to signal completion, not bash. Impossible to lose.
+- **No subprocess reaping** — sessions are in-memory, no zombie Pi processes
 
 ## Architecture
 
 ```
-Task → Foreman → Model Queue → Pi process → task_done tool → next step
-                                   │
-                              read/write/edit/bash
+Task → Foreman → Model Queue → Pi SDK session → task_done tool → next step
+                                    │
+                      read/edit/write/bash + task_done/ask/fail
 ```
 
-- **Dispatch foreman** — orchestration daemon. Workflows, model queues, state management.
-- **Pi** — lightweight coding agent. Runs via Pi SDK (TS) or subprocess (Go).
-- **llama-server** — local LLM inference via Vulkan/HIP.
-- **OpenClaw** — optional communication bridge for human escalation (Discord/Telegram).
+- **Foreman** (`foreman.ts`) — orchestration event loop, workflow state machine
+- **Runner** (`runner.ts`) — Pi SDK session manager, tool interception, loop detection
+- **Pi SDK** — `@mariozechner/pi-coding-agent`, runs models via OpenAI-compatible endpoints
+- **llama-server** — local LLM inference via Vulkan/HIP
+- **OpenClaw** — optional human escalation (Discord/Telegram)
 
-## Quick Start (Go binary)
+## Quick Start
 
 ```bash
-git clone https://github.com/Pernek-Enterprises/dispatch.git
-cd dispatch
+git clone https://github.com/Pernek-Enterprises/dispatch.git ~/dispatch-ts
+cd ~/dispatch-ts
 
-# Build (requires Go 1.21+)
-make build
+# Install dependencies
+npm install
+
+# Build
+npm run build
 
 # Interactive setup
-./dispatch setup
+node dist/index.js setup
 
 # Start the foreman
-./dispatch foreman
+DISPATCH_ROOT=~/.dispatch node dist/index.js foreman
 
 # Create a task
-./dispatch task create "Fix the auth redirect bug" --workflow coding-easy
+DISPATCH_ROOT=~/.dispatch node dist/index.js task create "Fix the auth redirect bug" --workflow coding-easy
 ```
 
-## How It Works
-
-1. **Create a task** with a workflow (e.g. `coding-easy`)
-2. **Foreman creates the first job** (spec step, model: `local-27b`)
-3. **Checks model queue** — is `local-27b` free? If yes, spawn Pi
-4. **Pi does the work** — reads code, writes files, uses tools
-5. **Pi signals done** — calls `task_done` tool (TS) or `dispatch done` via bash (Go)
-6. **Foreman advances** — creates next job (code step, model: `local-9b`)
-7. **Repeat** until workflow reaches `ready` (human review)
-
-### Branching
-
-Review steps output `ACCEPTED` or `DENIED`. Foreman does a simple string match:
-```
-result contains "ACCEPTED" → next step: ready
-result contains "DENIED"   → next step: fix → loops back to review
-```
-Max 3 review loops (configurable), then auto-escalates to human.
-
-### Escalation
-
-```
-Pi → task_ask(escalate=true, "question")
-   → Foreman → OpenClaw → Discord/Telegram → You
-   → dispatch answer --job <id> "do X"
-   → Pi resumes
-```
-
-## CLI Commands
+### Install as system binary
 
 ```bash
-# Workflow management (Pi uses these tools, not bash)
-task_done({ summary: "..." })      # signal completion
-task_ask({ question: "..." })      # ask question
-task_fail({ reason: "..." })       # report failure
-
-# Human commands
-dispatch answer --job <id> "answer"
-
-# Management
-dispatch task create "description" --workflow coding-easy
-dispatch task list
-dispatch task show <id>
-dispatch foreman
-dispatch setup
+npm run build
+sudo cp dist/index.js /usr/local/bin/dispatch
+# Add shebang if needed: echo '#!/usr/bin/env node' | cat - dist/index.js > /tmp/d && mv /tmp/d /usr/local/bin/dispatch
 ```
 
-## Configuration
+## Prerequisites
 
-### `config.json`
+- Node.js v22+
+- [Pi](https://github.com/badlogic/pi-mono) — coding agent (`npm install -g @mariozechner/pi-coding-agent`)
+- llama-server (or any OpenAI-compatible endpoint) — for local LLM inference
+- `~/.pi/agent/models.json` — must have your local model providers configured
+- OpenClaw (optional) — for human escalation via Discord/Telegram
 
+## Model Configuration
+
+Models are configured in two places:
+
+**`~/.dispatch/config.json`** — maps model aliases to providers:
 ```json
 {
-  "pollIntervalMs": 30000,
-  "pipePath": "/tmp/dispatch.pipe",
-  "maxLoopIterations": 3,
-  "notifications": {
-    "escalation": "discord",
-    "target": "1475634736834547938"
-  },
   "models": {
     "local-9b": {
       "provider": "openai-completions",
@@ -111,66 +88,106 @@ dispatch setup
 }
 ```
 
-### Workflows — `workflows/<name>.json`
+**`~/.pi/agent/models.json`** — Pi SDK's model registry (same providers, Pi resolves credentials here).
 
+Workflows reference models as `local-9b/Qwen3.5-9B-Q4_K_M.gguf` — the foreman splits on `/` to get provider + model ID.
+
+## How It Works
+
+1. **Create a task** — `dispatch task create "fix the bug" --workflow coding-easy`
+2. **Foreman creates the first job** (spec step, model: `local-27b`)
+3. **Checks model lock** — is `local-27b` free? If yes, start Pi SDK session
+4. **Pi does the work** — reads code, writes files, uses tools
+5. **Pi calls `task_done`** — a custom tool injected into every session
+6. **Runner signals foreman** — job moves to `done/`, workflow advances
+7. **Repeat** until workflow reaches `ready` (human review)
+
+### Loop Detection
+
+Every tool call signature is tracked. If the same tool is called with identical parameters 5 times in a row:
+1. Session is aborted
+2. Job moves to `failed/`
+3. Human notified via Discord/Telegram
+
+### Edit Tool Fix
+
+The Pi SDK's built-in `edit` tool returns `isError: true` when the file already has the correct content. The runner wraps this tool and returns a success response instead, stopping the most common loop pattern.
+
+## CLI
+
+```bash
+dispatch foreman                          # Start daemon
+dispatch task create "desc" [--workflow]  # Create task
+dispatch task list                        # List all tasks
+dispatch task show <id>                   # Show task + jobs
+dispatch done --job <id> "summary"        # Mark job complete (from within sessions)
+dispatch answer --job <id> "text"         # Answer a human job
+dispatch ask --job <id> "question"        # Ask a question
+dispatch fail --job <id> "reason"         # Mark job failed
+dispatch setup                            # Interactive setup
 ```
-workflows/coding-easy.json            ← step graph
-workflows/coding-easy/spec.prompt.md  ← what the agent sees
-workflows/coding-easy/code.prompt.md
-workflows/coding-easy/review.prompt.md
-```
 
-### Role Prompts — `agents/<role>.md`
-
-```
-agents/system.md      ← shared base
-agents/coder.md       ← coder identity
-agents/reviewer.md    ← reviewer identity
-```
-
-### Pi Skill — `skill/SKILL.md`
-
-Teaches Pi agents to use `task_done`/`task_ask`/`task_fail` tools. Loaded automatically on every session.
+All commands communicate with the running foreman via named pipe (`/tmp/dispatch.pipe` by default).
 
 ## File Structure
 
+Source:
+```
+dispatch-ts/
+├── src/
+│   ├── index.ts          CLI entrypoint + command routing
+│   ├── foreman.ts        Orchestration event loop + workflow state machine
+│   ├── runner.ts         Pi SDK session manager (the core)
+│   ├── config.ts         Config loading + model resolution
+│   ├── jobs.ts           Job file I/O
+│   ├── workflows.ts      Workflow JSON loading + routing
+│   ├── state.ts          state.json management
+│   ├── pipe.ts           Named FIFO pipe IPC
+│   ├── escalate.ts       OpenClaw notifications
+│   ├── prompts.ts        System prompt builder (shared)
+│   ├── log.ts            Logger
+│   └── cli/
+│       ├── task.ts       dispatch task [create|list|show]
+│       ├── done.ts       dispatch done
+│       ├── answer.ts     dispatch answer
+│       ├── ask.ts        dispatch ask
+│       ├── fail.ts       dispatch fail
+│       └── setup.ts      dispatch setup
+├── package.json
+└── tsconfig.json
+```
+
+Live install (unchanged from Go version):
 ```
 ~/.dispatch/
-├── config.json           ← settings + model registry
-├── state.json            ← model locks, task progress
-├── skill/SKILL.md        ← Pi tool instructions
-├── agents/               ← role identity prompts
-├── workflows/            ← workflow definitions + step prompts
-├── jobs/
-│   ├── pending/          ← queued
-│   ├── active/           ← in progress
-│   ├── done/             ← completed
-│   └── failed/           ← errored
-├── artifacts/<task-id>/  ← files passed between steps
-├── sessions/             ← Pi SDK session JSONL logs
-└── logs/                 ← foreman + session logs
+├── config.json           Settings (pollIntervalMs, pipePath, models, notifications)
+├── state.json            Model locks + task progress
+├── skill/SKILL.md        Agent instructions (task_done/ask/fail tools)
+├── agents/               Role identity prompts
+├── workflows/            Workflow definitions + step prompts
+├── jobs/{pending,active,done,failed}/
+├── artifacts/<task-id>/  Files passed between steps
+├── sessions/             Pi SDK session JSONL files
+└── logs/                 Foreman + session logs
 ```
 
-## Key Principles
+## Environment
 
-- **Files are state** — `ls jobs/` tells you everything
-- **Deterministic foreman** — no LLM in the scheduler, just code
-- **Event-driven** — CLI notifies foreman via named pipe
-- **Model-aware** — one job per GPU, no contention
-- **Tool-first completion** — `task_done` tool, not bash, signals job done
+| Variable | Default | Description |
+|---|---|---|
+| `DISPATCH_ROOT` | `~/.dispatch` | Live install directory |
+| `DISPATCH_JOB_ID` | — | Current job ID (set by foreman, used by `done`/`ask`/`fail`) |
 
-## Requirements
+## Key Differences from Go Version
 
-- Go 1.21+ (for building the binary)
-- [Pi](https://github.com/badlogic/pi-mono) coding agent
-- llama-server or any OpenAI-compatible endpoint
-- OpenClaw (optional, for escalation notifications)
-
-## Docs
-
-- [SPEC.md](./SPEC.md) — architecture and design decisions
-- [SPEC-TS-REWRITE.md](./SPEC-TS-REWRITE.md) — TypeScript migration plan
-- [AGENTS.md](./AGENTS.md) — codebase guide for AI agents
+| | Go | TypeScript |
+|---|---|---|
+| Pi invocation | `pi --print` subprocess | Pi SDK in-process |
+| Completion signal | `bash("dispatch done ...")` | `task_done` tool call |
+| Edit loop fix | Prompt hint (fragile) | Tool wrapper (correct) |
+| Loop detection | None | Built-in, 5x identical calls → abort |
+| Debug visibility | Log file per session | Full session events via `session.subscribe()` |
+| Config | `config.json` + `models.json` | Single `config.json` with `models` section |
 
 ## License
 
