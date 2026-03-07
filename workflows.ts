@@ -3,6 +3,7 @@ import * as path from "path";
 import { ROOT } from "./config.js";
 
 export interface Step {
+  preset?: string;  // name of a step preset to inherit defaults from
   role?: string;
   agent?: string;   // deprecated, use role
   model?: string;
@@ -15,6 +16,9 @@ export interface Step {
   artifactsOut?: string[];
   prompt?: string;  // loaded from file
 }
+
+/** A step preset — reusable defaults a workflow step can inherit via "preset": "<name>" */
+export type StepPreset = Omit<Step, "preset" | "next" | "branch" | "prompt">;
 
 export interface DestroyConfig {
   agents?: string[];
@@ -30,18 +34,44 @@ export interface Workflow {
   destroy: DestroyConfig;
 }
 
+/** Load step presets from ~/.dispatch/step-presets.json, returns {} if absent */
+function loadPresets(): Record<string, StepPreset> {
+  const p = path.join(ROOT, "step-presets.json");
+  if (!fs.existsSync(p)) return {};
+  try { return JSON.parse(fs.readFileSync(p, "utf8")); }
+  catch (e) { console.warn(`Warning: could not parse step-presets.json: ${e}`); return {}; }
+}
+
 export function loadWorkflow(name: string): Workflow {
   const p = path.join(ROOT, "workflows", `${name}.json`);
   if (!fs.existsSync(p)) throw new Error(`Workflow not found: ${name}`);
   const wf = JSON.parse(fs.readFileSync(p, "utf8")) as Workflow;
 
-  // Load step prompts
+  // Load presets once — applied before step-level overrides
+  const presets = loadPresets();
+
+  // Resolve steps: merge preset defaults → step fields (step always wins)
   const promptDir = path.join(ROOT, "workflows", name);
-  for (const [stepName, step] of Object.entries(wf.steps)) {
+  for (const [stepName, rawStep] of Object.entries(wf.steps)) {
+    let step = rawStep;
+
+    // 1. Apply preset defaults if specified
+    if (step.preset) {
+      const preset = presets[step.preset];
+      if (!preset) {
+        console.warn(`Warning: step "${stepName}" references unknown preset "${step.preset}"`);
+      } else {
+        // Preset provides defaults; step-level values override
+        step = { ...preset, ...step };
+      }
+    }
+
+    // 2. Load per-step prompt file (overrides anything in preset or JSON)
     const promptPath = path.join(promptDir, `${stepName}.prompt.md`);
     if (fs.existsSync(promptPath)) {
       step.prompt = fs.readFileSync(promptPath, "utf8").trim();
     }
+
     wf.steps[stepName] = step;
   }
 
