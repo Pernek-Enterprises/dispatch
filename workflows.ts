@@ -110,6 +110,35 @@ export function getNextStep(wf: Workflow, currentStep: string, result: string): 
   return step.next ?? null;
 }
 
+/**
+ * Validate that every role referenced in a workflow has a corresponding
+ * agent file in ~/.dispatch/agents/<role>.md.
+ * Human steps (type: "human") are skipped — they don't need an agent file.
+ * Returns a list of warning strings (empty = all good).
+ */
+export function validateWorkflowRoles(wf: Workflow): string[] {
+  const warnings: string[] = [];
+  const agentsDir = path.join(ROOT, "agents");
+  const seen = new Set<string>();
+
+  for (const [stepName, step] of Object.entries(wf.steps)) {
+    if (step.type === "human") continue;
+    const role = getRole(step);
+    if (!role) {
+      warnings.push(`Step "${stepName}" has no role defined — agent will not be assigned`);
+      continue;
+    }
+    if (seen.has(role)) continue;
+    seen.add(role);
+    const agentFile = path.join(agentsDir, `${role}.md`);
+    if (!fs.existsSync(agentFile)) {
+      warnings.push(`Role "${role}" (used in step "${stepName}") has no agent file — expected: agents/${role}.md`);
+    }
+  }
+
+  return warnings;
+}
+
 export function getDestroyAgents(wf: Workflow): string[] {
   if (wf.destroy.agents?.length) return wf.destroy.agents;
   const seen = new Set<string>();
