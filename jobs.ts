@@ -16,6 +16,16 @@ export interface Job {
   timeout: number;
   iteration?: number;
   project?: string;   // project name (optional — tasks without project work as before)
+  /** TDD loop mode: "tests" = loop until all tests pass via signal_loop_success */
+  loop?: string;
+  /** Max inner loop iterations before failing (default: 10) */
+  maxLoopIterations?: number;
+  /** Timestamp refreshed while a job is actively making progress. Used for timeout checks. */
+  lastActivityAt?: string;
+  /** True when a work job is paused and waiting for an answer. */
+  paused?: boolean;
+  /** For synthetic human answer jobs: which paused work job should resume after answer. */
+  answerForJobId?: string;
   prompt?: string;    // loaded separately, not in JSON
 }
 
@@ -30,6 +40,11 @@ export interface CreateOpts {
   timeout?: number;
   iteration?: number;
   project?: string;
+  loop?: string;
+  maxLoopIterations?: number;
+  lastActivityAt?: string;
+  paused?: boolean;
+  answerForJobId?: string;
   prompt?: string;
 }
 
@@ -56,6 +71,7 @@ export function newTaskId(): string {
 }
 
 export function createJob(opts: CreateOpts): string {
+  const now = new Date().toISOString();
   const id = newId(opts.step, opts.task);
   const job: Job = {
     id,
@@ -66,10 +82,15 @@ export function createJob(opts: CreateOpts): string {
     model: opts.model,
     type: opts.type ?? "work",
     priority: opts.priority ?? "normal",
-    created: new Date().toISOString(),
+    created: now,
     timeout: opts.timeout ?? 120,
     iteration: opts.iteration ?? 1,
+    lastActivityAt: opts.lastActivityAt ?? now,
     ...(opts.project ? { project: opts.project } : {}),
+    ...(opts.loop ? { loop: opts.loop } : {}),
+    ...(opts.maxLoopIterations ? { maxLoopIterations: opts.maxLoopIterations } : {}),
+    ...(opts.paused ? { paused: opts.paused } : {}),
+    ...(opts.answerForJobId ? { answerForJobId: opts.answerForJobId } : {}),
   };
 
   const dir = jobDir("pending");

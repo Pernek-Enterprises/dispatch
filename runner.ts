@@ -35,11 +35,13 @@ import { log } from "./log.js";
 export type TaskDoneCallback = (jobId: string, summary: string) => Promise<void>;
 export type TaskAskCallback  = (jobId: string, question: string, escalate: boolean) => Promise<void>;
 export type TaskFailCallback = (jobId: string, reason: string) => Promise<void>;
+export type TaskProgressCallback = (jobId: string) => Promise<void>;
 
 export interface RunnerCallbacks {
   onDone: TaskDoneCallback;
   onAsk:  TaskAskCallback;
   onFail: TaskFailCallback;
+  onProgress?: TaskProgressCallback;
 }
 
 const activeSessions = new Map<string, { abort: () => Promise<void> }>();
@@ -68,6 +70,9 @@ const AskSchema = Type.Object({
 const FailSchema = Type.Object({
   reason: Type.String({ description: "What went wrong and why you cannot continue" }),
 });
+const LoopSuccessSchema = Type.Object({
+  summary: Type.Optional(Type.String({ description: "Optional: brief note on what made the condition pass" })),
+});
 
 // ─── Session runner ───────────────────────────────────────────────────────────
 
@@ -87,11 +92,15 @@ async function runSession(
   const artifactDir = path.join(dispatchRoot, "artifacts", job.task);
   fs.mkdirSync(artifactDir, { recursive: true });
 
-  // CWD: use project workspace if set, else artifacts dir
-  const cwd = project?.workspace ?? artifactDir;
-  if (project?.workspace && !fs.existsSync(project.workspace)) {
-    log.warn(`Project workspace does not exist: ${project.workspace} — falling back to artifacts dir`);
-    // Don't fail hard — model may create files in artifacts, hooks will warn
+  // CWD: use project workspace when it exists, else fall back to artifacts dir.
+  let cwd = artifactDir;
+  if (project?.workspace) {
+    if (fs.existsSync(project.workspace)) {
+      cwd = project.workspace;
+    } else {
+      log.warn(`Project workspace does not exist: ${project.workspace} — falling back to artifacts dir`);
+      // Don't fail hard — model may create files in artifacts, hooks will warn.
+    }
   }
 
   // Build full prompt: prepend project context block if project is set
@@ -109,11 +118,15 @@ async function runSession(
   if (!model) throw new Error(`Model not found: ${modelCfg.provider}/${modelCfg.model} — add to ~/.pi/agent/models.json`);
 
   let doneSignalled = false;
+  let askPending = false;
   let loopAborted = false;
   let loopToolName = "";
   const recentCalls: string[] = [];
   // Forward ref — set after createAgentSession so tools can abort the session
   let abortFn: (() => Promise<void>) | undefined;
+  const markProgress = async (): Promise<void> => {
+    await callbacks.onProgress?.(job.id);
+  };
 
   // ─── Wrapped edit tool ───────────────────────────────────────────────────
   // Replace built-in edit tool: normalize "identical content" errors to success.
@@ -185,6 +198,16 @@ async function runSession(
     parameters: DoneSchema,
     execute: async (_id, params, _signal, _onUpdate, _ctx) => {
       if (doneSignalled) return { content: [{ type: "text" as const, text: "Already acknowledged." }], details: {} };
+      if (job.loop) {
+        log.warn(`task_done rejected for looped job ${job.id} (loop=${job.loop})`);
+        return {
+          content: [{
+            type: "text" as const,
+            text: "This job is running in loop mode. Do not call task_done yet. Continue working and call `signal_loop_success` only when the loop breakout condition is satisfied.",
+          }],
+          details: {},
+        };
+      }
       doneSignalled = true;
       log.info(`task_done: job ${job.id} — ${params.summary}`);
       const summary = params.summary;
@@ -204,8 +227,21 @@ async function runSession(
     parameters: AskSchema,
     execute: async (_id, params, _signal, _onUpdate, _ctx) => {
       log.info(`task_ask: job ${job.id} — escalate=${params.escalate ?? false}`);
-      setImmediate(() => callbacks.onAsk(job.id, params.question, params.escalate ?? false).catch((e) => log.error(`onAsk: ${e}`)));
-      return { content: [{ type: "text" as const, text: "Question received." }], details: {} };
+      if (job.loop) askPending = true;
+      void markProgress();
+      setImmediate(() => {
+        callbacks.onAsk(job.id, params.question, params.escalate ?? false).catch((e) => log.error(`onAsk: ${e}`));
+        if (job.loop) abortFn?.().catch(() => {});
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: job.loop
+            ? "Question received. Loop execution is now paused. Wait for the answer before continuing."
+            : "Question received.",
+        }],
+        details: {},
+      };
     },
   };
 
@@ -225,6 +261,26 @@ async function runSession(
         abortFn?.().catch(() => {});
       });
       return { content: [{ type: "text" as const, text: "Failure recorded." }], details: {} };
+    },
+  };
+
+  // ─── signal_loop_success ──────────────────────────────────────────────────
+  // Registered only when job.loop is set. Ends the TDD loop cleanly.
+  const signalLoopSuccessTool: ToolDefinition<typeof LoopSuccessSchema> = {
+    name: "signal_loop_success",
+    label: "Signal Loop Success",
+    description: "Call this when the loop breakout condition is satisfied (e.g. all tests pass). Do NOT call task_done — use this instead.",
+    parameters: LoopSuccessSchema,
+    execute: async (_id, params, _signal, _onUpdate, _ctx) => {
+      if (doneSignalled) return { content: [{ type: "text" as const, text: "Already acknowledged." }], details: {} };
+      doneSignalled = true;
+      const note = params.summary ?? "Loop condition satisfied";
+      log.info(`signal_loop_success: job ${job.id} — ${note}`);
+      setImmediate(() => {
+        callbacks.onDone(job.id, note).catch((e) => log.error(`onDone (loop): ${e}`));
+        abortFn?.().catch(() => {});
+      });
+      return { content: [{ type: "text" as const, text: "Loop ended. Great work." }], details: {} };
     },
   };
 
@@ -248,7 +304,14 @@ async function runSession(
     modelRegistry,
     // Exclude edit and bash from tools (replaced by wrapped versions in customTools)
     tools: [createReadTool(cwd), createWriteTool(cwd)],
-    customTools: [wrappedEdit, wrappedBash, taskDoneTool as unknown as ToolDefinition, taskAskTool as unknown as ToolDefinition, taskFailTool as unknown as ToolDefinition],
+    customTools: [
+      wrappedEdit, wrappedBash,
+      taskDoneTool as unknown as ToolDefinition,
+      taskAskTool as unknown as ToolDefinition,
+      taskFailTool as unknown as ToolDefinition,
+      // signal_loop_success only registered for TDD loop steps
+      ...(job.loop ? [signalLoopSuccessTool as unknown as ToolDefinition] : []),
+    ],
     resourceLoader: loader,
     sessionManager: SessionManager.create(cwd, path.join(dispatchRoot, "sessions")),
     settingsManager: settingsMgr,
@@ -287,7 +350,44 @@ async function runSession(
 
   log.info(`Session start: ${job.model} / ${job.id}`);
   try {
-    await session.prompt(fullPrompt);
+    try {
+      await markProgress();
+      await session.prompt(fullPrompt);
+
+      // ─── TDD loop ──────────────────────────────────────────────────────────
+      // If this step has a loop config and the agent didn't signal completion yet,
+      // keep firing continuation prompts until signal_loop_success is called,
+      // the loop is paused via task_ask, or max iterations is exhausted.
+      if (job.loop && !doneSignalled && !loopAborted && !askPending) {
+        const maxIter = job.maxLoopIterations ?? 10;
+        let iter = 0;
+
+        while (!doneSignalled && !loopAborted && !askPending && iter < maxIter) {
+          iter++;
+          log.info(`TDD loop iteration ${iter}/${maxIter} for job ${job.id} (loop=${job.loop})`);
+          const continuationPrompt = buildLoopContinuationPrompt(job.loop, iter, maxIter);
+          await markProgress();
+          await session.prompt(continuationPrompt);
+        }
+
+        if (askPending) {
+          log.info(`TDD loop paused for job ${job.id} while awaiting answer`);
+          return;
+        }
+
+        if (!doneSignalled && !loopAborted) {
+          log.warn(`TDD loop exhausted (${maxIter} iterations) for job ${job.id}`);
+          await callbacks.onFail(job.id, `TDD loop exhausted after ${maxIter} iterations without satisfying the loop condition`);
+          return;
+        }
+      }
+    } catch (err) {
+      if (doneSignalled || loopAborted || askPending) {
+        log.info(`Session prompt aborted for job ${job.id} after control signal`);
+      } else {
+        throw err;
+      }
+    }
   } finally {
     activeSessions.delete(job.id);
     logStream.end();
@@ -301,7 +401,9 @@ async function runSession(
         `\n\n---\n\n` +
         `⚠️ **Recovery attempt ${recoveryAttempt + 1}/${MAX_LOOP_RECOVERIES}:** You were stuck calling \`${loopToolName}\` ` +
         `with the same parameters repeatedly. Stop and reassess what you have done so far.\n\n` +
-        `- If your work is complete, call \`task_done\` now.\n` +
+        (job.loop
+          ? `- If the loop breakout condition is satisfied, call \`signal_loop_success\`.\n`
+          : `- If your work is complete, call \`task_done\` now.\n`) +
         `- If you are genuinely blocked, call \`task_ask\`.\n` +
         `- Otherwise, try a **different** approach — do not repeat the same command.`,
       };
@@ -313,8 +415,33 @@ async function runSession(
     return;
   }
 
-  if (!doneSignalled && !loopAborted) {
-    log.warn(`Job ${job.id} ended without task_done`);
-    await callbacks.onFail(job.id, "Session ended without calling task_done or task_fail");
+  if (!doneSignalled && !loopAborted && !askPending) {
+    log.warn(`Job ${job.id} ended without completion signal`);
+    await callbacks.onFail(
+      job.id,
+      job.loop
+        ? "Session ended without calling signal_loop_success or task_fail"
+        : "Session ended without calling task_done or task_fail",
+    );
   }
+}
+
+// ─── Loop continuation prompts ────────────────────────────────────────────────
+
+function buildLoopContinuationPrompt(loopType: string, iter: number, maxIter: number): string {
+  const iterNote = `(iteration ${iter}/${maxIter})`;
+  if (loopType === "tests") {
+    return (
+      `Some tests are still failing ${iterNote}. ` +
+      `Run the test suite, identify what is failing, and continue implementing. ` +
+      `When ALL tests pass (exit code 0), call \`signal_loop_success\`. ` +
+      `If you are genuinely stuck and cannot proceed, call \`task_ask\` instead.`
+    );
+  }
+  // Generic fallback for custom loop conditions
+  return (
+    `The loop condition has not been satisfied yet ${iterNote}. ` +
+    `Continue working. When the condition is satisfied, call \`signal_loop_success\`. ` +
+    `If you are stuck, call \`task_ask\`.`
+  );
 }

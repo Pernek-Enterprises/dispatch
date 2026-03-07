@@ -185,6 +185,8 @@ function doCreateTask(description: string, workflowName: string, priority: strin
     priority,
     timeout: firstStep.timeout ?? 120,
     project: projectName || undefined,
+    loop: firstStep.loop,
+    maxLoopIterations: firstStep.maxLoopIterations,
     prompt,
   });
 
