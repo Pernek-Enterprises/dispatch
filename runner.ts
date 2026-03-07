@@ -112,7 +112,7 @@ async function runSession(
   if (!model) throw new Error(`Model not found: ${modelCfg.provider}/${modelCfg.model} — add to ~/.pi/agent/models.json`);
 
   let doneSignalled = false;
-  let loopSuccessSignalled = false;
+  let askPending = false;
   let loopAborted = false;
   let loopToolName = "";
   const recentCalls: string[] = [];
@@ -189,6 +189,16 @@ async function runSession(
     parameters: DoneSchema,
     execute: async (_id, params, _signal, _onUpdate, _ctx) => {
       if (doneSignalled) return { content: [{ type: "text" as const, text: "Already acknowledged." }], details: {} };
+      if (job.loop) {
+        log.warn(`task_done rejected for looped job ${job.id} (loop=${job.loop})`);
+        return {
+          content: [{
+            type: "text" as const,
+            text: "This job is running in loop mode. Do not call task_done yet. Continue working and call `signal_loop_success` only when the loop breakout condition is satisfied.",
+          }],
+          details: {},
+        };
+      }
       doneSignalled = true;
       log.info(`task_done: job ${job.id} — ${params.summary}`);
       const summary = params.summary;
@@ -208,8 +218,20 @@ async function runSession(
     parameters: AskSchema,
     execute: async (_id, params, _signal, _onUpdate, _ctx) => {
       log.info(`task_ask: job ${job.id} — escalate=${params.escalate ?? false}`);
-      setImmediate(() => callbacks.onAsk(job.id, params.question, params.escalate ?? false).catch((e) => log.error(`onAsk: ${e}`)));
-      return { content: [{ type: "text" as const, text: "Question received." }], details: {} };
+      if (job.loop) askPending = true;
+      setImmediate(() => {
+        callbacks.onAsk(job.id, params.question, params.escalate ?? false).catch((e) => log.error(`onAsk: ${e}`));
+        if (job.loop) abortFn?.().catch(() => {});
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: job.loop
+            ? "Question received. Loop execution is now paused. Wait for the answer before continuing."
+            : "Question received.",
+        }],
+        details: {},
+      };
     },
   };
 
@@ -241,7 +263,6 @@ async function runSession(
     parameters: LoopSuccessSchema,
     execute: async (_id, params, _signal, _onUpdate, _ctx) => {
       if (doneSignalled) return { content: [{ type: "text" as const, text: "Already acknowledged." }], details: {} };
-      loopSuccessSignalled = true;
       doneSignalled = true;
       const note = params.summary ?? "Loop condition satisfied";
       log.info(`signal_loop_success: job ${job.id} — ${note}`);
@@ -319,27 +340,40 @@ async function runSession(
 
   log.info(`Session start: ${job.model} / ${job.id}`);
   try {
-    await session.prompt(fullPrompt);
+    try {
+      await session.prompt(fullPrompt);
 
-    // ─── TDD loop ────────────────────────────────────────────────────────────
-    // If this step has a loop config and the agent didn't signal completion yet,
-    // keep firing continuation prompts until signal_loop_success (or task_done)
-    // is called, or max iterations is exhausted.
-    if (job.loop && !doneSignalled && !loopAborted) {
-      const maxIter = job.maxLoopIterations ?? 10;
-      let iter = 0;
+      // ─── TDD loop ──────────────────────────────────────────────────────────
+      // If this step has a loop config and the agent didn't signal completion yet,
+      // keep firing continuation prompts until signal_loop_success is called,
+      // the loop is paused via task_ask, or max iterations is exhausted.
+      if (job.loop && !doneSignalled && !loopAborted && !askPending) {
+        const maxIter = job.maxLoopIterations ?? 10;
+        let iter = 0;
 
-      while (!doneSignalled && !loopAborted && iter < maxIter) {
-        iter++;
-        log.info(`TDD loop iteration ${iter}/${maxIter} for job ${job.id} (loop=${job.loop})`);
-        const continuationPrompt = buildLoopContinuationPrompt(job.loop, iter, maxIter);
-        await session.prompt(continuationPrompt);
+        while (!doneSignalled && !loopAborted && !askPending && iter < maxIter) {
+          iter++;
+          log.info(`TDD loop iteration ${iter}/${maxIter} for job ${job.id} (loop=${job.loop})`);
+          const continuationPrompt = buildLoopContinuationPrompt(job.loop, iter, maxIter);
+          await session.prompt(continuationPrompt);
+        }
+
+        if (askPending) {
+          log.info(`TDD loop paused for job ${job.id} while awaiting answer`);
+          return;
+        }
+
+        if (!doneSignalled && !loopAborted) {
+          log.warn(`TDD loop exhausted (${maxIter} iterations) for job ${job.id}`);
+          await callbacks.onFail(job.id, `TDD loop exhausted after ${maxIter} iterations without satisfying the loop condition`);
+          return;
+        }
       }
-
-      if (!doneSignalled && !loopAborted) {
-        log.warn(`TDD loop exhausted (${maxIter} iterations) for job ${job.id}`);
-        await callbacks.onFail(job.id, `TDD loop exhausted after ${maxIter} iterations without satisfying the loop condition`);
-        return;
+    } catch (err) {
+      if (doneSignalled || loopAborted || askPending) {
+        log.info(`Session prompt aborted for job ${job.id} after control signal`);
+      } else {
+        throw err;
       }
     }
   } finally {
@@ -355,7 +389,9 @@ async function runSession(
         `\n\n---\n\n` +
         `⚠️ **Recovery attempt ${recoveryAttempt + 1}/${MAX_LOOP_RECOVERIES}:** You were stuck calling \`${loopToolName}\` ` +
         `with the same parameters repeatedly. Stop and reassess what you have done so far.\n\n` +
-        `- If your work is complete, call \`task_done\` now.\n` +
+        (job.loop
+          ? `- If the loop breakout condition is satisfied, call \`signal_loop_success\`.\n`
+          : `- If your work is complete, call \`task_done\` now.\n`) +
         `- If you are genuinely blocked, call \`task_ask\`.\n` +
         `- Otherwise, try a **different** approach — do not repeat the same command.`,
       };
@@ -367,9 +403,14 @@ async function runSession(
     return;
   }
 
-  if (!doneSignalled && !loopAborted) {
-    log.warn(`Job ${job.id} ended without task_done`);
-    await callbacks.onFail(job.id, "Session ended without calling task_done or task_fail");
+  if (!doneSignalled && !loopAborted && !askPending) {
+    log.warn(`Job ${job.id} ended without completion signal`);
+    await callbacks.onFail(
+      job.id,
+      job.loop
+        ? "Session ended without calling signal_loop_success or task_fail"
+        : "Session ended without calling task_done or task_fail",
+    );
   }
 }
 
