@@ -320,9 +320,22 @@ function handleAnswer(cfg: Config, st: State, msg: PipeMessage): void {
   if (meta.type === "human") {
     log.info(`Human job ${msg.jobId} answered — advancing workflow`);
     if (meta.model) st.unlockModel(meta.model);
-    writeResult(msg.jobId!, "active", msg.message ?? "");
+    const answer = msg.message ?? "";
+    writeResult(msg.jobId!, "active", answer);
+    // Write answer to artifacts dir so next agent steps can read it
+    // File: {step}_answer.md — step-scoped so multiple human steps don't collide
+    if (answer) {
+      const artifactDir = path.join(ROOT, "artifacts", meta.task);
+      fs.mkdirSync(artifactDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(artifactDir, `${meta.step}_answer.md`),
+        answer + "\n",
+        "utf8",
+      );
+      log.info(`Wrote answer to artifacts/${meta.task}/${meta.step}_answer.md`);
+    }
     moveJob(msg.jobId!, "active", "done");
-    advanceWorkflow(cfg, st, meta, msg.message ?? "");
+    advanceWorkflow(cfg, st, meta, answer);
     return;
   }
 
