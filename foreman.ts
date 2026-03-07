@@ -174,6 +174,8 @@ function advanceWorkflow(cfg: Config, st: State, completedJob: Job, result: stri
     priority: "normal",
     timeout: nextStep.timeout ?? 120,
     iteration: stepIter,
+    loop: nextStep.loop,
+    maxLoopIterations: nextStep.maxLoopIterations,
     prompt: systemPrompt + "\n\n---\n\n" + stepPrompt,
   });
 

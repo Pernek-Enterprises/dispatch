@@ -16,6 +16,10 @@ export interface Job {
   timeout: number;
   iteration?: number;
   project?: string;   // project name (optional — tasks without project work as before)
+  /** TDD loop mode: "tests" = loop until all tests pass via signal_loop_success */
+  loop?: string;
+  /** Max inner loop iterations before failing (default: 10) */
+  maxLoopIterations?: number;
   prompt?: string;    // loaded separately, not in JSON
 }
 
@@ -30,6 +34,8 @@ export interface CreateOpts {
   timeout?: number;
   iteration?: number;
   project?: string;
+  loop?: string;
+  maxLoopIterations?: number;
   prompt?: string;
 }
 
@@ -70,6 +76,8 @@ export function createJob(opts: CreateOpts): string {
     timeout: opts.timeout ?? 120,
     iteration: opts.iteration ?? 1,
     ...(opts.project ? { project: opts.project } : {}),
+    ...(opts.loop ? { loop: opts.loop } : {}),
+    ...(opts.maxLoopIterations ? { maxLoopIterations: opts.maxLoopIterations } : {}),
   };
 
   const dir = jobDir("pending");

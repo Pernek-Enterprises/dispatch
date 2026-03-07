@@ -68,6 +68,9 @@ const AskSchema = Type.Object({
 const FailSchema = Type.Object({
   reason: Type.String({ description: "What went wrong and why you cannot continue" }),
 });
+const LoopSuccessSchema = Type.Object({
+  summary: Type.Optional(Type.String({ description: "Optional: brief note on what made the condition pass" })),
+});
 
 // ─── Session runner ───────────────────────────────────────────────────────────
 
@@ -109,6 +112,7 @@ async function runSession(
   if (!model) throw new Error(`Model not found: ${modelCfg.provider}/${modelCfg.model} — add to ~/.pi/agent/models.json`);
 
   let doneSignalled = false;
+  let loopSuccessSignalled = false;
   let loopAborted = false;
   let loopToolName = "";
   const recentCalls: string[] = [];
@@ -228,6 +232,27 @@ async function runSession(
     },
   };
 
+  // ─── signal_loop_success ──────────────────────────────────────────────────
+  // Registered only when job.loop is set. Ends the TDD loop cleanly.
+  const signalLoopSuccessTool: ToolDefinition<typeof LoopSuccessSchema> = {
+    name: "signal_loop_success",
+    label: "Signal Loop Success",
+    description: "Call this when the loop breakout condition is satisfied (e.g. all tests pass). Do NOT call task_done — use this instead.",
+    parameters: LoopSuccessSchema,
+    execute: async (_id, params, _signal, _onUpdate, _ctx) => {
+      if (doneSignalled) return { content: [{ type: "text" as const, text: "Already acknowledged." }], details: {} };
+      loopSuccessSignalled = true;
+      doneSignalled = true;
+      const note = params.summary ?? "Loop condition satisfied";
+      log.info(`signal_loop_success: job ${job.id} — ${note}`);
+      setImmediate(() => {
+        callbacks.onDone(job.id, note).catch((e) => log.error(`onDone (loop): ${e}`));
+        abortFn?.().catch(() => {});
+      });
+      return { content: [{ type: "text" as const, text: "Loop ended. Great work." }], details: {} };
+    },
+  };
+
   // ─── Resource loader ──────────────────────────────────────────────────────
   const settingsMgr = SettingsManager.inMemory({ compaction: { enabled: false } });
   const loader = new DefaultResourceLoader({
@@ -248,7 +273,14 @@ async function runSession(
     modelRegistry,
     // Exclude edit and bash from tools (replaced by wrapped versions in customTools)
     tools: [createReadTool(cwd), createWriteTool(cwd)],
-    customTools: [wrappedEdit, wrappedBash, taskDoneTool as unknown as ToolDefinition, taskAskTool as unknown as ToolDefinition, taskFailTool as unknown as ToolDefinition],
+    customTools: [
+      wrappedEdit, wrappedBash,
+      taskDoneTool as unknown as ToolDefinition,
+      taskAskTool as unknown as ToolDefinition,
+      taskFailTool as unknown as ToolDefinition,
+      // signal_loop_success only registered for TDD loop steps
+      ...(job.loop ? [signalLoopSuccessTool as unknown as ToolDefinition] : []),
+    ],
     resourceLoader: loader,
     sessionManager: SessionManager.create(cwd, path.join(dispatchRoot, "sessions")),
     settingsManager: settingsMgr,
@@ -288,6 +320,28 @@ async function runSession(
   log.info(`Session start: ${job.model} / ${job.id}`);
   try {
     await session.prompt(fullPrompt);
+
+    // ─── TDD loop ────────────────────────────────────────────────────────────
+    // If this step has a loop config and the agent didn't signal completion yet,
+    // keep firing continuation prompts until signal_loop_success (or task_done)
+    // is called, or max iterations is exhausted.
+    if (job.loop && !doneSignalled && !loopAborted) {
+      const maxIter = job.maxLoopIterations ?? 10;
+      let iter = 0;
+
+      while (!doneSignalled && !loopAborted && iter < maxIter) {
+        iter++;
+        log.info(`TDD loop iteration ${iter}/${maxIter} for job ${job.id} (loop=${job.loop})`);
+        const continuationPrompt = buildLoopContinuationPrompt(job.loop, iter, maxIter);
+        await session.prompt(continuationPrompt);
+      }
+
+      if (!doneSignalled && !loopAborted) {
+        log.warn(`TDD loop exhausted (${maxIter} iterations) for job ${job.id}`);
+        await callbacks.onFail(job.id, `TDD loop exhausted after ${maxIter} iterations without satisfying the loop condition`);
+        return;
+      }
+    }
   } finally {
     activeSessions.delete(job.id);
     logStream.end();
@@ -317,4 +371,24 @@ async function runSession(
     log.warn(`Job ${job.id} ended without task_done`);
     await callbacks.onFail(job.id, "Session ended without calling task_done or task_fail");
   }
+}
+
+// ─── Loop continuation prompts ────────────────────────────────────────────────
+
+function buildLoopContinuationPrompt(loopType: string, iter: number, maxIter: number): string {
+  const iterNote = `(iteration ${iter}/${maxIter})`;
+  if (loopType === "tests") {
+    return (
+      `Some tests are still failing ${iterNote}. ` +
+      `Run the test suite, identify what is failing, and continue implementing. ` +
+      `When ALL tests pass (exit code 0), call \`signal_loop_success\`. ` +
+      `If you are genuinely stuck and cannot proceed, call \`task_ask\` instead.`
+    );
+  }
+  // Generic fallback for custom loop conditions
+  return (
+    `The loop condition has not been satisfied yet ${iterNote}. ` +
+    `Continue working. When the condition is satisfied, call \`signal_loop_success\`. ` +
+    `If you are stuck, call \`task_ask\`.`
+  );
 }

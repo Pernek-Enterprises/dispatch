@@ -11,6 +11,10 @@ export interface Step {
   next?: string;
   branch?: Record<string, string>;
   maxIterations?: number;
+  /** TDD loop mode: "tests" = loop until all tests pass via signal_loop_success */
+  loop?: string;
+  /** Max inner loop iterations before failing (default: 10) */
+  maxLoopIterations?: number;
   type?: string;
   artifactsIn?: string[];
   artifactsOut?: string[];
