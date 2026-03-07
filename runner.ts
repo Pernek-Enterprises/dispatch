@@ -92,11 +92,15 @@ async function runSession(
   const artifactDir = path.join(dispatchRoot, "artifacts", job.task);
   fs.mkdirSync(artifactDir, { recursive: true });
 
-  // CWD: use project workspace if set, else artifacts dir
-  const cwd = project?.workspace ?? artifactDir;
-  if (project?.workspace && !fs.existsSync(project.workspace)) {
-    log.warn(`Project workspace does not exist: ${project.workspace} — falling back to artifacts dir`);
-    // Don't fail hard — model may create files in artifacts, hooks will warn
+  // CWD: use project workspace when it exists, else fall back to artifacts dir.
+  let cwd = artifactDir;
+  if (project?.workspace) {
+    if (fs.existsSync(project.workspace)) {
+      cwd = project.workspace;
+    } else {
+      log.warn(`Project workspace does not exist: ${project.workspace} — falling back to artifacts dir`);
+      // Don't fail hard — model may create files in artifacts, hooks will warn.
+    }
   }
 
   // Build full prompt: prepend project context block if project is set

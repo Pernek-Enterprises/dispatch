@@ -272,6 +272,90 @@ function touchJob(folder: string, jobId: string): void {
   writeJobMeta(jobId, folder, meta);
 }
 
+function runAfterStepHooks(meta: Job, project?: Project): void {
+  if (!project?.hooks) return;
+
+  const dispatchRoot = process.env.DISPATCH_ROOT ?? path.join(os.homedir(), ".dispatch");
+  const hookCtx: HookContext = {
+    project,
+    taskId: meta.task,
+    step: meta.step,
+    artifactDir: path.join(dispatchRoot, "artifacts", meta.task),
+    workspace: project.workspace ?? path.join(dispatchRoot, "artifacts", meta.task),
+  };
+  runHooks(`after_${meta.step}`, hookCtx);
+}
+
+function completeActiveJob(cfg: Config, st: State, meta: Job, result: string, project?: Project): void {
+  writeResult(meta.id, "active", result);
+  if (meta.model) st.unlockModel(meta.model);
+  moveJob(meta.id, "active", "done");
+  runAfterStepHooks(meta, project);
+  advanceWorkflow(cfg, st, meta, result, project);
+}
+
+async function handleActiveJobFailure(cfg: Config, st: State, meta: Job, reason: string, project?: Project): Promise<void> {
+  const jobId = meta.id;
+
+  // ─── Agentic triage ────────────────────────────────────────────────────
+  // Before escalating to human, ask the 27B model to diagnose and
+  // recommend a recovery action. Runs once per job, only if model is free.
+  const triageModelKey = cfg.triage?.model ?? "local-27b";
+  const canTriage = cfg.triage?.enabled !== false &&
+                    !st.hasBeenTriaged(jobId) &&
+                    st.isModelFree(triageModelKey);
+
+  if (canTriage) {
+    st.markTriaged(jobId);
+    st.save();
+    log.info(`Running triage for job ${jobId} (reason: ${reason})`);
+
+    const dispatchRoot = process.env.DISPATCH_ROOT ?? path.join(os.homedir(), ".dispatch");
+    const triageAction = await runTriage(cfg, meta, reason, dispatchRoot);
+
+    switch (triageAction.action) {
+      case "retry": {
+        log.info(`Triage recommends retry for ${jobId}: ${triageAction.reason}`);
+        notifyTriageAction(cfg, jobId, meta.task, "retry", triageAction.reason);
+        const retryJob: Job = {
+          ...meta,
+          prompt: (meta.prompt ?? "") + `\n\n---\n\n**🔍 Triage note:** ${triageAction.modifiedPrompt}`,
+        };
+        if (meta.model) st.lockModel(meta.model, jobId);
+        // Job stays in active/ — re-dispatch it
+        dispatchJobFromMeta(cfg, retryJob);
+        st.save();
+        return;
+      }
+      case "done": {
+        log.info(`Triage says job ${jobId} is done: ${triageAction.reason}`);
+        notifyTriageAction(cfg, jobId, meta.task, "done", triageAction.reason);
+        completeActiveJob(cfg, st, meta, triageAction.summary, project);
+        st.save();
+        return;
+      }
+      case "skip": {
+        log.info(`Triage says skip step ${meta.step} for task ${meta.task}: ${triageAction.reason}`);
+        notifyTriageAction(cfg, jobId, meta.task, "skip", triageAction.reason);
+        completeActiveJob(cfg, st, meta, `SKIPPED: ${triageAction.reason}`, project);
+        st.save();
+        return;
+      }
+      case "escalate":
+      default:
+        log.info(`Triage recommends escalation for ${jobId}: ${triageAction.reason}`);
+        // fall through to normal failure handling
+    }
+  }
+
+  const resultText = /^(FAILED|TIMEOUT):\s/.test(reason) ? reason : `FAILED: ${reason}`;
+  writeResult(jobId, "active", resultText);
+  if (meta.model) st.unlockModel(meta.model);
+  moveJob(jobId, "active", "failed");
+  notifyFailure(cfg, jobId, meta.task, reason);
+  st.save();
+}
+
 function pauseJobForAnswer(cfg: Config, st: State, jobId: string, question: string, escalate: boolean): void {
   const meta = getJobMeta(jobId, "active");
   if (!meta) {
@@ -327,12 +411,10 @@ function handleDone(cfg: Config, st: State, msg: PipeMessage): void {
   if (!meta) { log.warn(`Job ${msg.jobId} not found in active/`); return; }
 
   const result = msg.message || readResult(msg.jobId!, "active") || "";
-  if (result) writeResult(msg.jobId!, "active", result);
+  const project = loadJobProject(meta);
 
   log.info(`Job done: ${msg.jobId} (step=${meta.step})`);
-  if (meta.model) st.unlockModel(meta.model);
-  moveJob(msg.jobId!, "active", "done");
-  advanceWorkflow(cfg, st, meta, result);
+  completeActiveJob(cfg, st, meta, result, project);
 }
 
 function handleFail(cfg: Config, st: State, msg: PipeMessage): void {
@@ -340,10 +422,7 @@ function handleFail(cfg: Config, st: State, msg: PipeMessage): void {
   if (!meta) { log.warn(`Job ${msg.jobId} not found in active/`); return; }
 
   log.warn(`Job failed: ${msg.jobId} — ${msg.reason}`);
-  if (msg.reason) writeResult(msg.jobId!, "active", `FAILED: ${msg.reason}`);
-  if (meta.model) st.unlockModel(meta.model);
-  moveJob(msg.jobId!, "active", "failed");
-  notifyFailure(cfg, msg.jobId!, meta.task, msg.reason ?? "unknown");
+  void handleActiveJobFailure(cfg, st, meta, msg.reason ?? "unknown", loadJobProject(meta));
 }
 
 function handleAsk(cfg: Config, st: State, msg: PipeMessage): void {
@@ -394,8 +473,6 @@ function handleAnswer(cfg: Config, st: State, msg: PipeMessage): void {
 
   if (meta.type === "human") {
     log.info(`Human job ${msg.jobId} answered — advancing workflow`);
-    if (meta.model) st.unlockModel(meta.model);
-    writeResult(msg.jobId!, "active", answer);
     // Write answer to artifacts dir so next agent steps can read it
     // File: {step}_answer.md — step-scoped so multiple human steps don't collide
     if (answer) {
@@ -408,8 +485,7 @@ function handleAnswer(cfg: Config, st: State, msg: PipeMessage): void {
       );
       log.info(`Wrote answer to artifacts/${meta.task}/${meta.step}_answer.md`);
     }
-    moveJob(msg.jobId!, "active", "done");
-    advanceWorkflow(cfg, st, meta, answer);
+    completeActiveJob(cfg, st, meta, answer, loadJobProject(meta));
     return;
   }
 
@@ -442,22 +518,7 @@ function dispatchJobFromMeta(cfg: Config, job: Job): void {
     onDone: async (jobId, summary) => {
       const meta = getJobMeta(jobId, "active");
       if (!meta) return;
-      writeResult(jobId, "active", summary);
-      if (meta.model) st.unlockModel(meta.model);
-      moveJob(jobId, "active", "done");
-      // Run project hooks before advancing (hooks fire before next step dispatches)
-      if (project?.hooks) {
-        const dispatchRoot = process.env.DISPATCH_ROOT ?? path.join(os.homedir(), ".dispatch");
-        const hookCtx: HookContext = {
-          project,
-          taskId: meta.task,
-          step: meta.step,
-          artifactDir: path.join(dispatchRoot, "artifacts", meta.task),
-          workspace: project.workspace ?? path.join(dispatchRoot, "artifacts", meta.task),
-        };
-        runHooks(`after_${meta.step}`, hookCtx);
-      }
-      advanceWorkflow(cfg, st, meta, summary, project);
+      completeActiveJob(cfg, st, meta, summary, project);
       st.save();
     },
     onAsk: async (jobId, question, escalate) => {
@@ -470,70 +531,7 @@ function dispatchJobFromMeta(cfg: Config, job: Job): void {
     onFail: async (jobId, reason) => {
       const meta = getJobMeta(jobId, "active");
       if (!meta) return;
-
-      // ─── Agentic triage ──────────────────────────────────────────────────
-      // Before escalating to human, ask the 27B model to diagnose and
-      // recommend a recovery action. Runs once per job, only if model is free.
-      const triageModelKey = cfg.triage?.model ?? "local-27b";
-      const canTriage = cfg.triage?.enabled !== false &&
-                        !st.hasBeenTriaged(jobId) &&
-                        st.isModelFree(triageModelKey);
-
-      if (canTriage) {
-        st.markTriaged(jobId);
-        st.save();
-        log.info(`Running triage for job ${jobId} (reason: ${reason})`);
-
-        const dispatchRoot = process.env.DISPATCH_ROOT ?? path.join(os.homedir(), ".dispatch");
-        const triageAction = await runTriage(cfg, meta, reason, dispatchRoot);
-
-        switch (triageAction.action) {
-          case "retry": {
-            log.info(`Triage recommends retry for ${jobId}: ${triageAction.reason}`);
-            notifyTriageAction(cfg, jobId, meta.task, "retry", triageAction.reason);
-            const retryJob: Job = {
-              ...meta,
-              prompt: (meta.prompt ?? "") + `\n\n---\n\n**🔍 Triage note:** ${triageAction.modifiedPrompt}`,
-            };
-            if (meta.model) st.lockModel(meta.model, jobId);
-            // Job stays in active/ — re-dispatch it
-            dispatchJobFromMeta(cfg, retryJob);
-            st.save();
-            return;
-          }
-          case "done": {
-            log.info(`Triage says job ${jobId} is done: ${triageAction.reason}`);
-            notifyTriageAction(cfg, jobId, meta.task, "done", triageAction.reason);
-            writeResult(jobId, "active", triageAction.summary);
-            if (meta.model) st.unlockModel(meta.model);
-            moveJob(jobId, "active", "done");
-            advanceWorkflow(cfg, st, meta, triageAction.summary, project);
-            st.save();
-            return;
-          }
-          case "skip": {
-            log.info(`Triage says skip step ${meta.step} for task ${meta.task}: ${triageAction.reason}`);
-            notifyTriageAction(cfg, jobId, meta.task, "skip", triageAction.reason);
-            writeResult(jobId, "active", `SKIPPED: ${triageAction.reason}`);
-            if (meta.model) st.unlockModel(meta.model);
-            moveJob(jobId, "active", "done");
-            advanceWorkflow(cfg, st, meta, `SKIPPED: ${triageAction.reason}`, project);
-            st.save();
-            return;
-          }
-          case "escalate":
-          default:
-            log.info(`Triage recommends escalation for ${jobId}: ${triageAction.reason}`);
-            // fall through to normal failure handling
-        }
-      }
-
-      // Normal failure path
-      writeResult(jobId, "active", `FAILED: ${reason}`);
-      if (meta.model) st.unlockModel(meta.model);
-      moveJob(jobId, "active", "failed");
-      notifyFailure(cfg, jobId, meta.task, reason);
-      st.save();
+      await handleActiveJobFailure(cfg, st, meta, reason, project);
     },
   }, project);  // ← pass project so runner gets context block + workspace CWD
 }
@@ -574,11 +572,10 @@ function healthCheck(cfg: Config): void {
     const deadline = baseline + job.timeout * 1000;
 
     if (now > deadline) {
+      const reason = `TIMEOUT: exceeded ${job.timeout}s without progress`;
       log.warn(`Job ${job.id} timed out (timeout=${job.timeout}s, lastActivityAt=${job.lastActivityAt ?? job.created})`);
       abortSession(job.id).catch(() => {});
-      if (job.model) st.unlockModel(job.model);
-      writeResult(job.id, "active", `TIMEOUT: exceeded ${job.timeout}s without progress`);
-      moveJob(job.id, "active", "failed");
+      void handleActiveJobFailure(cfg, st, job, reason, loadJobProject(job));
     }
   }
 }
