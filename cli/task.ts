@@ -3,7 +3,7 @@ import * as path from "path";
 import * as readline from "readline";
 import { ROOT, loadConfig } from "../config.js";
 import { createJob, newTaskId, listJobs } from "../jobs.js";
-import { loadWorkflow, listWorkflows, getRole } from "../workflows.js";
+import { loadWorkflow, listWorkflows, getRole, validateWorkflowRoles } from "../workflows.js";
 import { sendPipe } from "../pipe.js";
 import { loadSystemPromptPublic } from "../prompts.js";
 import { loadProject, listProjects, validateProjectHooks } from "../project.js";
@@ -143,6 +143,14 @@ function doCreateTask(description: string, workflowName: string, priority: strin
   const wf = loadWorkflow(workflowName);
   const firstStep = wf.steps[wf.firstStep];
   if (!firstStep) { console.error(`First step "${wf.firstStep}" not found in workflow`); process.exit(1); }
+
+  // Validate all roles in the workflow have corresponding agent files
+  const roleWarnings = validateWorkflowRoles(wf);
+  if (roleWarnings.length > 0) {
+    console.warn(`\n⚠️  Role validation failed for workflow "${workflowName}":`);
+    for (const w of roleWarnings) console.warn(`   • ${w}`);
+    console.warn(`   Create the missing agent file(s) in ~/.dispatch/agents/ to fix this.\n`);
+  }
 
   // Validate project hooks against workflow steps — warn but don't block
   if (projectName) {
