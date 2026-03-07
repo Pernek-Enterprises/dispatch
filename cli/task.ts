@@ -6,7 +6,7 @@ import { createJob, newTaskId, listJobs } from "../jobs.js";
 import { loadWorkflow, listWorkflows, getRole } from "../workflows.js";
 import { sendPipe } from "../pipe.js";
 import { loadSystemPromptPublic } from "../prompts.js";
-import { loadProject, listProjects } from "../project.js";
+import { loadProject, listProjects, validateProjectHooks } from "../project.js";
 
 export function taskCmd(args: string[]): void {
   if (!args.length || args[0] === "help") {
@@ -143,6 +143,21 @@ function doCreateTask(description: string, workflowName: string, priority: strin
   const wf = loadWorkflow(workflowName);
   const firstStep = wf.steps[wf.firstStep];
   if (!firstStep) { console.error(`First step "${wf.firstStep}" not found in workflow`); process.exit(1); }
+
+  // Validate project hooks against workflow steps — warn but don't block
+  if (projectName) {
+    try {
+      const proj = loadProject(projectName);
+      const hookWarnings = validateProjectHooks(proj, wf.steps);
+      if (hookWarnings.length > 0) {
+        console.warn(`\n⚠️  Hook/workflow mismatch for project "${projectName}" + workflow "${workflowName}":`);
+        for (const w of hookWarnings) console.warn(`   • ${w}`);
+        console.warn(`   Hooks with no matching step will silently not fire.\n`);
+      }
+    } catch {
+      // loadProject failure is handled downstream — skip validation
+    }
+  }
 
   const taskId = newTaskId();
   const role = getRole(firstStep);

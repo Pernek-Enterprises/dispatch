@@ -281,3 +281,50 @@ const BUILTIN_HOOKS: Record<string, HookFn> = {
 
 // Export built-in hook names for validation / help output
 export const BUILTIN_HOOK_NAMES = Object.keys(BUILTIN_HOOKS);
+
+// ─── Hook / Workflow Validation ───────────────────────────────────────────────
+
+/**
+ * Validate that all hook keys in a project correspond to real steps in the
+ * given workflow config.
+ *
+ * Hook key format: `{before|after}_{stepName}` or `{before|after}_{stepName}_{keyword}`
+ *
+ * Step names may contain underscores (e.g. "questions_ready"), so we match
+ * greedily — longest known step name that fits as a prefix wins.
+ *
+ * Returns a list of warning strings (empty = all good).
+ */
+export function validateProjectHooks(
+  project: Project,
+  workflowSteps: Record<string, unknown>,
+): string[] {
+  const warnings: string[] = [];
+  const stepNames = Object.keys(workflowSteps);
+
+  // Sort longest-first so greedy match works for underscored step names
+  const sortedSteps = [...stepNames].sort((a, b) => b.length - a.length);
+
+  for (const hookKey of Object.keys(project.hooks ?? {})) {
+    // Strip before_ / after_ prefix
+    const prefixMatch = hookKey.match(/^(before|after)_(.+)$/);
+    if (!prefixMatch) {
+      warnings.push(`Hook key "${hookKey}" is not valid — must start with "before_" or "after_"`);
+      continue;
+    }
+    const rest = prefixMatch[2]; // e.g. "code", "review_accepted", "questions_ready"
+
+    // Greedy-match against known step names
+    const matchedStep = sortedSteps.find(
+      (step) => rest === step || rest.startsWith(step + "_"),
+    );
+
+    if (!matchedStep) {
+      warnings.push(
+        `Hook "${hookKey}" has no matching step in workflow — known steps: ${stepNames.join(", ")}`,
+      );
+    }
+  }
+
+  return warnings;
+}
