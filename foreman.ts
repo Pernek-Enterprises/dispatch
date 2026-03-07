@@ -265,6 +265,61 @@ function getAgentModel(wf: Workflow, agentName: string): string {
   return model;
 }
 
+function touchJob(folder: string, jobId: string): void {
+  const meta = getJobMeta(jobId, folder);
+  if (!meta) return;
+  meta.lastActivityAt = new Date().toISOString();
+  writeJobMeta(jobId, folder, meta);
+}
+
+function pauseJobForAnswer(cfg: Config, st: State, jobId: string, question: string, escalate: boolean): void {
+  const meta = getJobMeta(jobId, "active");
+  if (!meta) {
+    log.warn(`Cannot pause missing active job ${jobId} for question`);
+    return;
+  }
+
+  meta.paused = true;
+  meta.lastActivityAt = new Date().toISOString();
+  writeJobMeta(jobId, "active", meta);
+  if (meta.model) st.unlockModel(meta.model);
+  moveJob(jobId, "active", "pending");
+
+  const promptLines = [
+    `An agent paused work and needs an answer before it can continue.`,
+    "",
+    `Task: ${meta.task}`,
+    `Step: ${meta.step}`,
+    `Original job: ${jobId}`,
+    escalate ? "Mode: escalated to human" : "Mode: answer required to resume paused work",
+    "",
+    "Question:",
+    question,
+  ];
+
+  const answerJobId = createJob({
+    task: meta.task,
+    workflow: meta.workflow,
+    step: `_answer:${meta.step}`,
+    agent: "stefan",
+    type: "human",
+    priority: "high",
+    timeout: 0,
+    project: meta.project,
+    answerForJobId: jobId,
+    prompt: "",
+  });
+
+  const answerPrompt = [
+    ...promptLines,
+    "",
+    `Reply with: dispatch answer --job ${answerJobId} \"your answer\"`,
+  ].join("\n");
+  fs.writeFileSync(path.join(ROOT, "jobs", "pending", `${answerJobId}.prompt.md`), answerPrompt + "\n", "utf8");
+
+  log.info(`Paused job ${jobId}; created answer job ${answerJobId}`);
+}
+
 // ─── Event handlers ───────────────────────────────────────────────────────────
 
 function handleDone(cfg: Config, st: State, msg: PipeMessage): void {
@@ -293,25 +348,12 @@ function handleFail(cfg: Config, st: State, msg: PipeMessage): void {
 
 function handleAsk(cfg: Config, st: State, msg: PipeMessage): void {
   log.info(`Question from ${msg.jobId}: ${msg.question}`);
-
-  if (msg.escalate) {
-    const taskId = msg.taskId ?? getJobMeta(msg.jobId!, "active")?.task ?? "";
-    notifyReady(cfg, msg.jobId!, taskId);
+  if (!msg.jobId || !msg.question) {
+    log.warn(`Ignoring malformed ask event for job ${msg.jobId}`);
     return;
   }
 
-  const meta = getJobMeta(msg.jobId!, "active");
-  const taskId = msg.taskId ?? meta?.task ?? "";
-  createJob({
-    task: taskId,
-    workflow: "answer",
-    step: "answer",
-    model: "local-9b",
-    type: "answer",
-    priority: "high",
-    timeout: 60,
-    prompt: `An agent has a question:\n\n${msg.question}\n\nProvide a clear, actionable answer.`,
-  });
+  pauseJobForAnswer(cfg, st, msg.jobId, msg.question, msg.escalate ?? false);
 }
 
 function handleAnswer(cfg: Config, st: State, msg: PipeMessage): void {
@@ -319,10 +361,40 @@ function handleAnswer(cfg: Config, st: State, msg: PipeMessage): void {
   const meta = getJobMeta(msg.jobId!, "active");
   if (!meta) { log.warn(`Job ${msg.jobId} not found in active/`); return; }
 
+  const answer = msg.message ?? "";
+
+  if (meta.answerForJobId) {
+    log.info(`Answer job ${msg.jobId} completed — resuming paused job ${meta.answerForJobId}`);
+    writeResult(msg.jobId!, "active", answer);
+    moveJob(msg.jobId!, "active", "done");
+
+    const original = getJobMeta(meta.answerForJobId, "pending");
+    if (!original) {
+      log.warn(`Paused job ${meta.answerForJobId} not found in pending/ for answer job ${msg.jobId}`);
+      return;
+    }
+
+    original.paused = false;
+    original.lastActivityAt = new Date().toISOString();
+    original.prompt = (original.prompt ?? "") + `\n\n---\n\n**Answer to your question:**\n\n${answer}\n\nResume the task from where you paused.`;
+    writeJobMeta(original.id, "pending", original);
+
+    if (answer) {
+      const artifactDir = path.join(ROOT, "artifacts", original.task);
+      fs.mkdirSync(artifactDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(artifactDir, `${original.step}_answer.md`),
+        answer + "\n",
+        "utf8",
+      );
+      log.info(`Wrote answer to artifacts/${original.task}/${original.step}_answer.md`);
+    }
+    return;
+  }
+
   if (meta.type === "human") {
     log.info(`Human job ${msg.jobId} answered — advancing workflow`);
     if (meta.model) st.unlockModel(meta.model);
-    const answer = msg.message ?? "";
     writeResult(msg.jobId!, "active", answer);
     // Write answer to artifacts dir so next agent steps can read it
     // File: {step}_answer.md — step-scoped so multiple human steps don't collide
@@ -342,7 +414,8 @@ function handleAnswer(cfg: Config, st: State, msg: PipeMessage): void {
   }
 
   // Re-dispatch work job with answer appended
-  meta.prompt = (meta.prompt ?? "") + `\n\n---\n\n**Human answered your question:**\n\n${msg.message}\n\nContinue with your work.`;
+  meta.prompt = (meta.prompt ?? "") + `\n\n---\n\n**Human answered your question:**\n\n${answer}\n\nContinue with your work.`;
+  meta.lastActivityAt = new Date().toISOString();
   writeJobMeta(msg.jobId!, "active", meta);
   dispatchJobFromMeta(cfg, meta);
 }
@@ -389,6 +462,10 @@ function dispatchJobFromMeta(cfg: Config, job: Job): void {
     },
     onAsk: async (jobId, question, escalate) => {
       handleAsk(cfg, st, { type: "ask", jobId, question, escalate });
+    },
+    onProgress: async (jobId) => {
+      touchJob("active", jobId);
+      st.save();
     },
     onFail: async (jobId, reason) => {
       const meta = getJobMeta(jobId, "active");
@@ -475,11 +552,13 @@ function dispatchPending(cfg: Config): void {
     }
 
     if (job.type === "work") {
+      if (job.paused) continue;
       if (job.model && !st.isModelFree(job.model)) continue;
       log.info(`Dispatching work: ${job.id} (model=${job.model}, role=${job.agent})`);
       if (job.model) st.lockModel(job.model, job.id);
+      touchJob("pending", job.id);
       moveJob(job.id, "pending", "active");
-      dispatchJobFromMeta(cfg, job);
+      dispatchJobFromMeta(cfg, { ...job, lastActivityAt: new Date().toISOString() });
     }
     // "triage" / "answer" / "parse" handled by LLM direct call (future work — skip for now)
   }
@@ -491,14 +570,14 @@ function healthCheck(cfg: Config): void {
 
   for (const job of active) {
     if (job.type === "human" || !job.timeout) continue;
-    const created = new Date(job.created).getTime();
-    const deadline = created + job.timeout * 1000;
+    const baseline = new Date(job.lastActivityAt ?? job.created).getTime();
+    const deadline = baseline + job.timeout * 1000;
 
     if (now > deadline) {
-      log.warn(`Job ${job.id} timed out (timeout=${job.timeout}s)`);
+      log.warn(`Job ${job.id} timed out (timeout=${job.timeout}s, lastActivityAt=${job.lastActivityAt ?? job.created})`);
       abortSession(job.id).catch(() => {});
       if (job.model) st.unlockModel(job.model);
-      writeResult(job.id, "active", `TIMEOUT: exceeded ${job.timeout}s deadline`);
+      writeResult(job.id, "active", `TIMEOUT: exceeded ${job.timeout}s without progress`);
       moveJob(job.id, "active", "failed");
     }
   }

@@ -35,11 +35,13 @@ import { log } from "./log.js";
 export type TaskDoneCallback = (jobId: string, summary: string) => Promise<void>;
 export type TaskAskCallback  = (jobId: string, question: string, escalate: boolean) => Promise<void>;
 export type TaskFailCallback = (jobId: string, reason: string) => Promise<void>;
+export type TaskProgressCallback = (jobId: string) => Promise<void>;
 
 export interface RunnerCallbacks {
   onDone: TaskDoneCallback;
   onAsk:  TaskAskCallback;
   onFail: TaskFailCallback;
+  onProgress?: TaskProgressCallback;
 }
 
 const activeSessions = new Map<string, { abort: () => Promise<void> }>();
@@ -118,6 +120,9 @@ async function runSession(
   const recentCalls: string[] = [];
   // Forward ref — set after createAgentSession so tools can abort the session
   let abortFn: (() => Promise<void>) | undefined;
+  const markProgress = async (): Promise<void> => {
+    await callbacks.onProgress?.(job.id);
+  };
 
   // ─── Wrapped edit tool ───────────────────────────────────────────────────
   // Replace built-in edit tool: normalize "identical content" errors to success.
@@ -219,6 +224,7 @@ async function runSession(
     execute: async (_id, params, _signal, _onUpdate, _ctx) => {
       log.info(`task_ask: job ${job.id} — escalate=${params.escalate ?? false}`);
       if (job.loop) askPending = true;
+      void markProgress();
       setImmediate(() => {
         callbacks.onAsk(job.id, params.question, params.escalate ?? false).catch((e) => log.error(`onAsk: ${e}`));
         if (job.loop) abortFn?.().catch(() => {});
@@ -341,6 +347,7 @@ async function runSession(
   log.info(`Session start: ${job.model} / ${job.id}`);
   try {
     try {
+      await markProgress();
       await session.prompt(fullPrompt);
 
       // ─── TDD loop ──────────────────────────────────────────────────────────
@@ -355,6 +362,7 @@ async function runSession(
           iter++;
           log.info(`TDD loop iteration ${iter}/${maxIter} for job ${job.id} (loop=${job.loop})`);
           const continuationPrompt = buildLoopContinuationPrompt(job.loop, iter, maxIter);
+          await markProgress();
           await session.prompt(continuationPrompt);
         }
 
